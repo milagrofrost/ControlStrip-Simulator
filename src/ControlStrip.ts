@@ -35,15 +35,56 @@ const CONTROL_STRIP_ASSETS = {
 export type ControlStripItem = {
   id: string;
   label: string;
-  icon: string;
+  icon?: string;
+  desktopFile?: string;
+  isPinned?: boolean;
   isOpen: boolean;
   windows?: ControlStripWindow[];
+  match?: WindowMatch;
+  disabled?: boolean;
+  error?: string;
 };
 
 export type ControlStripWindow = {
   id: string;
   title: string;
   isActive?: boolean;
+};
+
+export type ControlStripElement = HTMLElement & {
+  setItems: (nextItems: ControlStripItem[]) => void;
+};
+
+export type ControlStripSizingOptions = {
+  visibleIcons?: number | null;
+  snapBackSeconds?: number;
+};
+
+export type ControlStripOptions = {
+  onLaunchPinnedApp?: (item: ControlStripItem) => void;
+  onFocusAppWindows?: (item: ControlStripItem) => void;
+  sizing?: ControlStripSizingOptions;
+};
+
+export type PinnedAppConfig = {
+  desktop_file: string;
+  match?: WindowMatch;
+};
+
+export type WindowMatch = {
+  wm_class?: string;
+  title_contains?: string;
+};
+
+export type ParsedDesktopFile = {
+  name?: string;
+  icon?: string;
+  exec?: string;
+  startup_wm_class?: string;
+  type?: string;
+  hidden?: boolean;
+  no_display?: boolean;
+  comment?: string;
 };
 
 export type PressedPart = null | 'head' | 'tail' | 'left' | 'right' | `pane:${string}`;
@@ -77,39 +118,11 @@ type StripPart = {
   className?: string;
 };
 
-const TEST_ITEMS: ControlStripItem[] = [
-  { id: 'finder', label: 'Finder', icon: 'F', isOpen: true, windows: [{ id: 'desktop', title: 'Desktop', isActive: true }] },
-  {
-    id: 'browser',
-    label: 'Web Browser',
-    icon: 'W',
-    isOpen: true,
-    windows: [
-      { id: 'docs', title: 'Control Strip Notes' },
-      { id: 'mail', title: 'Inbox - Long Project Planning Thread' },
-      { id: 'release', title: 'Release Checklist and Compatibility Matrix' }
-    ]
-  },
-  { id: 'calculator', label: 'Calculator', icon: 'C', isOpen: false },
-  { id: 'paint', label: 'Paint', icon: 'P', isOpen: true, windows: [] },
-  {
-    id: 'editor',
-    label: 'Text Editor',
-    icon: 'T',
-    isOpen: true,
-    windows: [
-      { id: 'readme', title: 'README.md' },
-      { id: 'proposal', title: 'Very Long Window Title For Menu Width Testing' }
-    ]
-  },
-  { id: 'music', label: 'Music Player', icon: 'M', isOpen: false }
-];
-
 const initialVisibleStart = 0;
-const initialVisibleCount = 3;
 const minVisibleCount = 1; // A zero-pane strip leaves the scroll controls acting on an invisible window.
 const defaultPaneWidth = 27;
 const longPressDelayMs = 1000;
+const defaultSnapBackDelayMs = 10000;
 
 type ResizeState = {
   startX: number;
@@ -117,20 +130,28 @@ type ResizeState = {
   paneWidth: number;
 };
 
-export function createControlStrip(): HTMLElement {
+export function createControlStrip(
+  initialItems: ControlStripItem[] = [],
+  options: ControlStripOptions = {}
+): ControlStripElement {
+  let items = [...initialItems];
+  const configuredVisibleCount = normalizeConfiguredVisibleCount(options.sizing?.visibleIcons);
+  const snapBackDelayMs = normalizeSnapBackDelayMs(options.sizing?.snapBackSeconds);
   let pressedPart: PressedPart = null;
   // visibleStart is the first item index in view; visibleCount is the pane window size.
   let visibleStart = initialVisibleStart;
-  let visibleCount = initialVisibleCount;
+  let visibleCount = getDesiredVisibleCount(items.length, configuredVisibleCount);
+  let isCollapsed = false;
   // Tail dragging compares horizontal pointer movement to one measured pane width.
   let resizeState: ResizeState | null = null;
   let activePanePress: ActivePanePress | null = null;
   let longPressTimer: number | null = null;
   let longPressTriggered = false;
   let openWindowMenu: OpenWindowMenu | null = null;
+  let snapBackTimer: number | null = null;
   const eventController = new AbortController();
 
-  const strip = document.createElement('section');
+  const strip = document.createElement('section') as ControlStripElement;
   strip.className = 'control-strip';
   strip.setAttribute('aria-label', 'Mac OS 9 Control Strip');
 
@@ -140,7 +161,11 @@ export function createControlStrip(): HTMLElement {
   const menuLayer = document.createElement('div');
   menuLayer.className = 'control-strip__menu-layer';
 
-  strip.append(track, menuLayer, createAssetPreload());
+  const emptyMessage = document.createElement('div');
+  emptyMessage.className = 'control-strip__empty-message';
+  emptyMessage.textContent = 'No pinned apps';
+
+  strip.append(track, emptyMessage, menuLayer, createAssetPreload());
 
   const setPressedPart = (nextPressedPart: PressedPart): void => {
     if (pressedPart === nextPressedPart) {
@@ -173,6 +198,42 @@ export function createControlStrip(): HTMLElement {
     longPressTimer = null;
   };
 
+  const clearSnapBackTimer = (): void => {
+    if (snapBackTimer === null) {
+      return;
+    }
+
+    window.clearTimeout(snapBackTimer);
+    snapBackTimer = null;
+  };
+
+  const getDesiredVisiblePaneCount = (): number => {
+    return getDesiredVisibleCount(items.length, configuredVisibleCount);
+  };
+
+  const snapBackToDesiredVisibleCount = (): void => {
+    snapBackTimer = null;
+
+    const nextVisibleCount = getDesiredVisiblePaneCount();
+    if (nextVisibleCount === visibleCount) {
+      return;
+    }
+
+    visibleCount = nextVisibleCount;
+    visibleStart = clampVisibleStart(visibleStart);
+    render();
+  };
+
+  const scheduleSnapBack = (): void => {
+    clearSnapBackTimer();
+
+    if (configuredVisibleCount === null || visibleCount === getDesiredVisiblePaneCount()) {
+      return;
+    }
+
+    snapBackTimer = window.setTimeout(snapBackToDesiredVisibleCount, snapBackDelayMs);
+  };
+
   const clearActivePanePress = (): void => {
     clearLongPressTimer();
     activePanePress = null;
@@ -180,12 +241,16 @@ export function createControlStrip(): HTMLElement {
   };
 
   const clampVisibleStart = (nextVisibleStart: number): number => {
-    const maxVisibleStart = Math.max(0, TEST_ITEMS.length - visibleCount);
+    const maxVisibleStart = Math.max(0, items.length - visibleCount);
     return Math.min(Math.max(nextVisibleStart, 0), maxVisibleStart);
   };
 
   const clampVisibleCount = (nextVisibleCount: number): number => {
-    return Math.min(Math.max(nextVisibleCount, minVisibleCount), TEST_ITEMS.length);
+    if (items.length === 0) {
+      return 0;
+    }
+
+    return Math.min(Math.max(nextVisibleCount, minVisibleCount), items.length);
   };
 
   const scrollBy = (delta: number): void => {
@@ -199,7 +264,26 @@ export function createControlStrip(): HTMLElement {
     render();
   };
 
+  const toggleCollapsed = (): void => {
+    clearSnapBackTimer();
+
+    if (isCollapsed) {
+      isCollapsed = false;
+      visibleCount = items.length;
+      visibleStart = 0;
+      render();
+      return;
+    }
+
+    isCollapsed = true;
+    visibleCount = 0;
+    visibleStart = 0;
+    render();
+  };
+
   const beginResize = (event: PointerEvent): void => {
+    clearSnapBackTimer();
+    isCollapsed = false;
     resizeState = {
       startX: event.clientX,
       startVisibleCount: visibleCount,
@@ -232,6 +316,7 @@ export function createControlStrip(): HTMLElement {
     }
 
     resizeState = null;
+    scheduleSnapBack();
     return true;
   };
 
@@ -241,6 +326,11 @@ export function createControlStrip(): HTMLElement {
     }
 
     const activePressedPart = pressedPart;
+
+    if (activePressedPart === 'head') {
+      toggleCollapsed();
+      return;
+    }
 
     if (activePressedPart === 'left') {
       scrollBy(-1);
@@ -256,10 +346,10 @@ export function createControlStrip(): HTMLElement {
       }
 
       const itemId = activePressedPart.slice('pane:'.length);
-      const item = TEST_ITEMS.find((candidate) => candidate.id === itemId);
+      const item = items.find((candidate) => candidate.id === itemId);
 
       if (item) {
-        activatePane(item);
+        activatePane(item, options);
       }
     }
   };
@@ -281,8 +371,8 @@ export function createControlStrip(): HTMLElement {
 
       const item = activePanePress.item;
       activePanePress = null;
-      activatePane(item);
       clearPressedPart();
+      activatePane(item, options);
       return;
     }
 
@@ -317,6 +407,19 @@ export function createControlStrip(): HTMLElement {
   );
   window.addEventListener(
     'pointercancel',
+    () => {
+      clearActivePanePress();
+      const didEndResize = endResize();
+      clearPressedPart();
+
+      if (didEndResize && pressedPart === null) {
+        render();
+      }
+    },
+    { signal: eventController.signal }
+  );
+  window.addEventListener(
+    'blur',
     () => {
       clearActivePanePress();
       const didEndResize = endResize();
@@ -370,11 +473,14 @@ export function createControlStrip(): HTMLElement {
   );
 
   const render = (): void => {
-    const visibleItems = TEST_ITEMS.slice(visibleStart, visibleStart + visibleCount);
-    const canScrollLeft = visibleStart > 0;
-    const canScrollRight = visibleStart + visibleCount < TEST_ITEMS.length;
+    const visibleItems = items.slice(visibleStart, visibleStart + visibleCount);
+    const canScrollLeft = !isCollapsed && visibleStart > 0;
+    const canScrollRight = !isCollapsed && visibleCount > 0 && visibleStart + visibleCount < items.length;
+    const shouldRenderScrollControls = !isCollapsed;
 
-    track.replaceChildren(
+    emptyMessage.hidden = items.length > 0;
+
+    const trackParts: HTMLElement[] = [
       createImagePart(
         {
           src: pressedPart === 'head' ? CONTROL_STRIP_ASSETS.headHold : CONTROL_STRIP_ASSETS.head,
@@ -384,8 +490,12 @@ export function createControlStrip(): HTMLElement {
         },
         setPressedPart,
         clearPressedPart
-      ),
-      createImagePart(
+      )
+    ];
+
+    if (shouldRenderScrollControls) {
+      trackParts.push(
+        createImagePart(
         {
           src:
             canScrollLeft && pressedPart === 'left'
@@ -400,10 +510,10 @@ export function createControlStrip(): HTMLElement {
         setPressedPart,
         clearPressedPart
       ),
-      ...visibleItems.map((item) =>
-        createPane(item, pressedPart, attachPaneHandlers)
-      ),
-      createImagePart(
+        ...visibleItems.map((item) =>
+          createPane(item, pressedPart, attachPaneHandlers)
+        ),
+        createImagePart(
         {
           src:
             canScrollRight && pressedPart === 'right'
@@ -417,7 +527,11 @@ export function createControlStrip(): HTMLElement {
         },
         setPressedPart,
         clearPressedPart
-      ),
+        )
+      );
+    }
+
+    trackParts.push(
       createImagePart(
         {
           src:
@@ -434,6 +548,8 @@ export function createControlStrip(): HTMLElement {
         clearPressedPart
       )
     );
+
+    track.replaceChildren(...trackParts);
   };
 
   const beginPaneLongPress = (item: ControlStripItem, anchorRect: AnchorRect): void => {
@@ -526,7 +642,7 @@ export function createControlStrip(): HTMLElement {
       return;
     }
 
-    const item = TEST_ITEMS.find((candidate) => candidate.id === openWindowMenu?.itemId);
+    const item = items.find((candidate) => candidate.id === openWindowMenu?.itemId);
     if (!item) {
       return;
     }
@@ -535,10 +651,39 @@ export function createControlStrip(): HTMLElement {
     menuLayer.append(menu);
   };
 
+  strip.setItems = (nextItems: ControlStripItem[]): void => {
+    const previousItemCount = items.length;
+    const wasAtRightEdge = visibleStart + visibleCount >= previousItemCount;
+    items = [...nextItems];
+    visibleCount = isCollapsed
+      ? 0
+      : configuredVisibleCount === null
+      ? getDesiredVisiblePaneCount()
+      : visibleCount === 0 && items.length > 0
+        ? getDesiredVisiblePaneCount()
+        : clampVisibleCount(visibleCount);
+    visibleStart = clampVisibleStart(
+      wasAtRightEdge && items.length > previousItemCount
+        ? items.length - visibleCount
+        : visibleStart
+    );
+
+    const menuItem = openWindowMenu
+      ? items.find((item) => item.id === openWindowMenu?.itemId)
+      : null;
+    if (openWindowMenu && (!menuItem || !hasSelectableWindows(menuItem))) {
+      openWindowMenu = null;
+    }
+
+    render();
+    renderMenu();
+  };
+
   render();
   const removeStrip = strip.remove.bind(strip);
   strip.remove = () => {
     clearLongPressTimer();
+    clearSnapBackTimer();
     eventController.abort();
     removeStrip();
   };
@@ -589,26 +734,49 @@ function createPane(
     'control-strip__part',
     'control-strip__pane',
     hasSelectableWindows(item) && 'is-open',
-    isPressed && 'is-pressed'
+    isPressed && 'is-pressed',
+    item.disabled && 'is-disabled'
   ]
     .filter(Boolean)
     .join(' ');
   pane.style.backgroundImage = `url("${getPaneAsset(item, isPressed)}")`;
   pane.setAttribute('role', 'img');
   pane.setAttribute('aria-label', item.label);
-  attachPaneHandlers(pane, item, panePressedPart);
+  pane.title = item.error ? `${item.label}: ${item.error}` : item.label;
+
+  if (!item.disabled) {
+    attachPaneHandlers(pane, item, panePressedPart);
+  }
 
   const icon = document.createElement('span');
   icon.className = 'control-strip__icon';
-  icon.textContent = item.icon;
+  if (item.icon) {
+    const iconImage = document.createElement('img');
+    iconImage.className = 'control-strip__icon-image';
+    iconImage.src = item.icon;
+    iconImage.alt = '';
+    icon.append(iconImage);
+  } else {
+    icon.textContent = getPlaceholderIcon(item.label);
+  }
   pane.append(icon);
 
   return pane;
 }
 
-function activatePane(item: ControlStripItem): void {
+function activatePane(item: ControlStripItem, options: ControlStripOptions): void {
+  if (item.disabled) {
+    console.log(`Control Strip: pinned app ${item.id} is disabled: ${item.error ?? 'unknown error'}`);
+    return;
+  }
+
   if (item.isOpen) {
-    console.log(`Control Strip: would bring all windows forward for app ${item.id} (${item.label})`);
+    options.onFocusAppWindows?.(item);
+    return;
+  }
+
+  if (item.isPinned) {
+    options.onLaunchPinnedApp?.(item);
     return;
   }
 
@@ -659,7 +827,11 @@ function getPaneAsset(item: ControlStripItem, isPressed: boolean): string {
 }
 
 function hasSelectableWindows(item: ControlStripItem): boolean {
-  return item.isOpen && Boolean(item.windows?.length);
+  return !item.disabled && item.isOpen && Boolean(item.windows?.length);
+}
+
+function getPlaceholderIcon(label: string): string {
+  return label.trim().charAt(0).toUpperCase() || '?';
 }
 
 function attachPressHandlers(
@@ -691,6 +863,35 @@ function attachPressHandlers(
 function getPaneWidth(track: HTMLElement): number {
   const pane = track.querySelector<HTMLElement>('.control-strip__pane');
   return pane?.getBoundingClientRect().width || defaultPaneWidth;
+}
+
+function normalizeConfiguredVisibleCount(visibleIcons: number | null | undefined): number | null {
+  if (visibleIcons === null || visibleIcons === undefined || !Number.isFinite(visibleIcons)) {
+    return null;
+  }
+
+  const normalized = Math.floor(visibleIcons);
+  return normalized > 0 ? normalized : null;
+}
+
+function normalizeSnapBackDelayMs(snapBackSeconds: number | undefined): number {
+  if (snapBackSeconds === undefined || !Number.isFinite(snapBackSeconds)) {
+    return defaultSnapBackDelayMs;
+  }
+
+  return Math.max(0, snapBackSeconds * 1000);
+}
+
+function getDesiredVisibleCount(itemCount: number, configuredVisibleCount: number | null): number {
+  if (itemCount === 0) {
+    return 0;
+  }
+
+  if (configuredVisibleCount === null) {
+    return itemCount;
+  }
+
+  return Math.min(Math.max(configuredVisibleCount, minVisibleCount), itemCount);
 }
 
 function createAssetPreload(): HTMLElement {

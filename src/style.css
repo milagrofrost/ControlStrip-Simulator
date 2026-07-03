@@ -1,6 +1,6 @@
 :root {
   color: #111;
-  background: #8f8f8f;
+  background: transparent;
   font-family: Chicago, Charcoal, Geneva, Arial, sans-serif;
   font-synthesis: none;
   text-rendering: geometricPrecision;
@@ -16,6 +16,7 @@ body {
   min-width: 320px;
   min-height: 100%;
   margin: 0;
+  background: transparent;
 }
 
 body {
@@ -25,4 +26,5 @@ body {
 
 #app {
   min-height: 100vh;
+  background: transparent;
 }

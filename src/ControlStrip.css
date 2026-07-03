@@ -1,7 +1,7 @@
 .control-strip {
   position: fixed;
   left: 0;
-  bottom: 14px;
+  bottom: 0;
   z-index: 1000;
   display: block;
   line-height: 0;
@@ -49,6 +49,10 @@
   width: 30px;
 }
 
+.control-strip__pane.is-disabled {
+  opacity: 0.55;
+}
+
 .control-strip__icon {
   position: absolute;
   left: 50%;
@@ -67,8 +71,31 @@
   line-height: 1;
 }
 
+.control-strip__icon-image {
+  display: block;
+  max-width: 11px;
+  max-height: 11px;
+}
+
 .control-strip__pane.is-open .control-strip__icon {
   transform: translate(calc(-50% - 4px), -50%);
+}
+
+.control-strip__empty-message {
+  position: absolute;
+  left: 39px;
+  bottom: 26px;
+  width: max-content;
+  padding: 2px 5px;
+  border-width: 1px;
+  border-style: solid;
+  border-color: #fff #555 #555 #fff;
+  background: #cfcfcf;
+  color: #111;
+  font-family: Geneva, Arial, sans-serif;
+  font-size: 10px;
+  line-height: 1.2;
+  box-shadow: 1px 1px 0 #111;
 }
 
 .control-strip__preload {
