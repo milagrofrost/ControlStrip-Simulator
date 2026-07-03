@@ -54,7 +54,17 @@ type OpenWindowMenu = {
     left: number;
     top: number;
     width: number;
+    bottom: number;
+    right: number;
   };
+};
+
+type AnchorRect = OpenWindowMenu['anchorRect'];
+
+type ActivePanePress = {
+  item: ControlStripItem;
+  pointerId: number;
+  anchorRect: AnchorRect;
 };
 
 type StripPart = {
@@ -114,6 +124,7 @@ export function createControlStrip(): HTMLElement {
   let visibleCount = initialVisibleCount;
   // Tail dragging compares horizontal pointer movement to one measured pane width.
   let resizeState: ResizeState | null = null;
+  let activePanePress: ActivePanePress | null = null;
   let longPressTimer: number | null = null;
   let longPressTriggered = false;
   let openWindowMenu: OpenWindowMenu | null = null;
@@ -160,6 +171,12 @@ export function createControlStrip(): HTMLElement {
 
     window.clearTimeout(longPressTimer);
     longPressTimer = null;
+  };
+
+  const clearActivePanePress = (): void => {
+    clearLongPressTimer();
+    activePanePress = null;
+    longPressTriggered = false;
   };
 
   const clampVisibleStart = (nextVisibleStart: number): number => {
@@ -247,42 +264,29 @@ export function createControlStrip(): HTMLElement {
     }
   };
 
-  const selectWindowAtPoint = (event: PointerEvent): boolean => {
-    if (!openWindowMenu) {
-      return false;
-    }
-
-    const target = document.elementFromPoint(event.clientX, event.clientY);
-    const row = target instanceof Element ? target.closest<HTMLElement>('[data-window-id]') : null;
-
-    if (!row) {
-      closeWindowMenu();
-      return true;
-    }
-
-    const item = TEST_ITEMS.find((candidate) => candidate.id === row.dataset.appId);
-    const windowItem = item?.windows?.find((candidate) => candidate.id === row.dataset.windowId);
-
-    if (item && windowItem) {
-      console.log(
-        `Control Strip: would select window ${windowItem.id} (${windowItem.title}) for app ${item.id}`
-      );
-    }
-
-    closeWindowMenu();
-    return true;
-  };
-
   const releasePressedPart = (event: PointerEvent): void => {
-    clearLongPressTimer();
-    const didSelectFromMenu = longPressTriggered && selectWindowAtPoint(event);
+    if (activePanePress) {
+      if (event.pointerId !== activePanePress.pointerId) {
+        return;
+      }
 
-    if (didSelectFromMenu) {
-      longPressTriggered = false;
+      clearLongPressTimer();
+
+      if (longPressTriggered) {
+        activePanePress = null;
+        longPressTriggered = false;
+        clearPressedPart();
+        return;
+      }
+
+      const item = activePanePress.item;
+      activePanePress = null;
+      activatePane(item);
       clearPressedPart();
       return;
     }
 
+    clearLongPressTimer();
     activatePressedPart();
     longPressTriggered = false;
     const didEndResize = endResize();
@@ -296,6 +300,10 @@ export function createControlStrip(): HTMLElement {
   strip.addEventListener(
     'pointerleave',
     () => {
+      if (activePanePress && !longPressTriggered) {
+        clearActivePanePress();
+      }
+
       clearPressedPart();
     },
     { signal: eventController.signal }
@@ -310,8 +318,7 @@ export function createControlStrip(): HTMLElement {
   window.addEventListener(
     'pointercancel',
     () => {
-      clearLongPressTimer();
-      longPressTriggered = false;
+      clearActivePanePress();
       const didEndResize = endResize();
       clearPressedPart();
 
@@ -325,6 +332,7 @@ export function createControlStrip(): HTMLElement {
     'pointermove',
     (event) => {
       updateResize(event);
+      cancelPanePressIfPointerLeftAnchor(event);
     },
     { signal: eventController.signal }
   );
@@ -393,7 +401,7 @@ export function createControlStrip(): HTMLElement {
         clearPressedPart
       ),
       ...visibleItems.map((item) =>
-        createPane(item, pressedPart, setPressedPart, clearPressedPart, beginPaneLongPress)
+        createPane(item, pressedPart, attachPaneHandlers)
       ),
       createImagePart(
         {
@@ -428,14 +436,14 @@ export function createControlStrip(): HTMLElement {
     );
   };
 
-  const beginPaneLongPress = (item: ControlStripItem, anchorRect: DOMRect): void => {
+  const beginPaneLongPress = (item: ControlStripItem, anchorRect: AnchorRect): void => {
     clearLongPressTimer();
     longPressTriggered = false;
 
     longPressTimer = window.setTimeout(() => {
       longPressTimer = null;
 
-      if (!item.isOpen) {
+      if (!activePanePress || activePanePress.item.id !== item.id || !hasSelectableWindows(item)) {
         return;
       }
 
@@ -445,11 +453,70 @@ export function createControlStrip(): HTMLElement {
         anchorRect: {
           left: anchorRect.left,
           top: anchorRect.top,
-          width: anchorRect.width
+          width: anchorRect.width,
+          bottom: anchorRect.bottom,
+          right: anchorRect.right
         }
       };
       renderMenu();
     }, longPressDelayMs);
+  };
+
+  const attachPaneHandlers = (
+    pane: HTMLElement,
+    item: ControlStripItem,
+    panePressedPart: `pane:${string}`
+  ): void => {
+    pane.addEventListener('pointerdown', (event) => {
+      if (event.button !== 0) {
+        return;
+      }
+
+      const rect = pane.getBoundingClientRect();
+      const anchorRect = {
+        left: rect.left,
+        top: rect.top,
+        width: rect.width,
+        bottom: rect.bottom,
+        right: rect.right
+      };
+
+      activePanePress = {
+        item,
+        pointerId: event.pointerId,
+        anchorRect
+      };
+
+      if (pane.setPointerCapture) {
+        pane.setPointerCapture(event.pointerId);
+      }
+
+      setPressedPart(panePressedPart);
+
+      if (hasSelectableWindows(item)) {
+        beginPaneLongPress(item, anchorRect);
+      }
+    });
+  };
+
+  const cancelPanePressIfPointerLeftAnchor = (event: PointerEvent): void => {
+    if (!activePanePress || longPressTriggered || event.pointerId !== activePanePress.pointerId) {
+      return;
+    }
+
+    const { anchorRect } = activePanePress;
+    const isInsideAnchor =
+      event.clientX >= anchorRect.left &&
+      event.clientX <= anchorRect.right &&
+      event.clientY >= anchorRect.top &&
+      event.clientY <= anchorRect.bottom;
+
+    if (isInsideAnchor) {
+      return;
+    }
+
+    clearActivePanePress();
+    clearPressedPart();
   };
 
   const renderMenu = (): void => {
@@ -509,9 +576,11 @@ function createImagePart(
 function createPane(
   item: ControlStripItem,
   pressedPart: PressedPart,
-  setPressedPart: (pressedPart: PressedPart) => void,
-  clearPressedPart: () => void,
-  beginPaneLongPress: (item: ControlStripItem, anchorRect: DOMRect) => void
+  attachPaneHandlers: (
+    pane: HTMLElement,
+    item: ControlStripItem,
+    panePressedPart: `pane:${string}`
+  ) => void
 ): HTMLElement {
   const panePressedPart = `pane:${item.id}` as const;
   const isPressed = pressedPart === panePressedPart;
@@ -519,7 +588,7 @@ function createPane(
   pane.className = [
     'control-strip__part',
     'control-strip__pane',
-    item.isOpen && 'is-open',
+    hasSelectableWindows(item) && 'is-open',
     isPressed && 'is-pressed'
   ]
     .filter(Boolean)
@@ -527,15 +596,7 @@ function createPane(
   pane.style.backgroundImage = `url("${getPaneAsset(item, isPressed)}")`;
   pane.setAttribute('role', 'img');
   pane.setAttribute('aria-label', item.label);
-  attachPressHandlers(
-    pane,
-    panePressedPart,
-    setPressedPart,
-    clearPressedPart,
-    () => {
-      beginPaneLongPress(item, pane.getBoundingClientRect());
-    }
-  );
+  attachPaneHandlers(pane, item, panePressedPart);
 
   const icon = document.createElement('span');
   icon.className = 'control-strip__icon';
@@ -567,15 +628,7 @@ function createWindowMenu(
   menu.setAttribute('role', 'menu');
   menu.setAttribute('aria-label', `${item.label} windows`);
 
-  if (!item.windows?.length) {
-    const row = document.createElement('div');
-    row.className = 'control-strip__window-menu-row is-disabled';
-    row.textContent = 'No windows';
-    menu.append(row);
-    return menu;
-  }
-
-  for (const windowItem of item.windows) {
+  for (const windowItem of item.windows ?? []) {
     const row = document.createElement('button');
     row.className = ['control-strip__window-menu-row', windowItem.isActive && 'is-active']
       .filter(Boolean)
@@ -597,12 +650,16 @@ function createWindowMenu(
 }
 
 function getPaneAsset(item: ControlStripItem, isPressed: boolean): string {
-  // Closed items use pane.png; open items use pane_arrow.png to reserve arrow space.
-  if (item.isOpen) {
+  // Only items with selectable windows use pane_arrow.png to reserve arrow space.
+  if (hasSelectableWindows(item)) {
     return isPressed ? CONTROL_STRIP_ASSETS.paneArrowHold : CONTROL_STRIP_ASSETS.paneArrow;
   }
 
   return isPressed ? CONTROL_STRIP_ASSETS.paneHold : CONTROL_STRIP_ASSETS.pane;
+}
+
+function hasSelectableWindows(item: ControlStripItem): boolean {
+  return item.isOpen && Boolean(item.windows?.length);
 }
 
 function attachPressHandlers(
