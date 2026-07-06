@@ -118,6 +118,20 @@ export async function focusAppWindows(appId: string): Promise<void> {
   }
 }
 
+export function resizeStripWindow(width: number, height: number): void {
+  if (!isTauri()) {
+    return;
+  }
+
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+    return;
+  }
+
+  void invoke('resize_strip_window', { width, height }).catch((error) => {
+    console.warn('Control Strip: failed to resize strip window', error);
+  });
+}
+
 export function startRunningWindowPolling(onWindows?: (windows: RunningWindow[]) => void): () => void {
   if (!isTauri()) {
     console.info('Control Strip: running window polling disabled outside Tauri');

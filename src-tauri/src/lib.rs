@@ -273,6 +273,42 @@ fn focus_app_windows(app_id: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Resize the strip window to hug the visible content the webview reports, then
+/// re-anchor it to the bottom-left. Without this the fully transparent window keeps
+/// its full footprint and swallows clicks meant for the app behind it.
+#[tauri::command]
+fn resize_strip_window(
+    window: tauri::WebviewWindow,
+    width: f64,
+    height: f64,
+) -> Result<(), String> {
+    if !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 0.0 {
+        return Err(format!("Invalid strip content size {width}x{height}"));
+    }
+
+    let placement = load_window_placement();
+    let scale = window
+        .scale_factor()
+        .map_err(|error| format!("Failed to read scale factor: {error}"))?;
+    // width/height arrive as CSS logical pixels; window geometry is physical pixels.
+    let physical_width = ((width * scale).ceil() as i64).clamp(1, u32::MAX as i64) as u32;
+    let physical_height = ((height * scale).ceil() as i64).clamp(1, u32::MAX as i64) as u32;
+
+    // Defensive: if the window still carries non-resizable size hints from a stale
+    // config, set_size gets clamped by the compositor. Clear them before resizing.
+    if let Err(error) = window.set_resizable(true) {
+        eprintln!("Control Strip: could not mark window resizable: {error}");
+    }
+
+    eprintln!(
+        "Control Strip: resize_strip_window css={width:.1}x{height:.1} scale={scale} physical={physical_width}x{physical_height} left={}",
+        placement.left
+    );
+
+    place_window_bottom_left(&window, placement.left, physical_width, physical_height)
+        .map_err(|error| format!("Failed to resize strip window: {error}"))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -297,7 +333,8 @@ pub fn run() {
             get_control_strip_model,
             get_running_windows,
             launch_pinned_app,
-            focus_app_windows
+            focus_app_windows,
+            resize_strip_window
         ])
         .run(tauri::generate_context!())
         .expect("error while running ControlStrip Simulator");
@@ -317,15 +354,29 @@ fn position_control_strip_window(
     window: &tauri::WebviewWindow,
     placement: WindowPlacementConfig,
 ) -> tauri::Result<()> {
-    window.set_size(PhysicalSize::new(placement.width, placement.height))?;
+    place_window_bottom_left(window, placement.left, placement.width, placement.height)
+}
+
+fn place_window_bottom_left(
+    window: &tauri::WebviewWindow,
+    left: i32,
+    width: u32,
+    height: u32,
+) -> tauri::Result<()> {
+    window.set_size(PhysicalSize::new(width, height))?;
     let Some(monitor) = window.current_monitor()?.or(window.primary_monitor()?) else {
         eprintln!("Control Strip: no current or primary monitor available; keeping default position");
         return Ok(());
     };
     let monitor_position = monitor.position();
     let monitor_size = monitor.size();
-    let bottom_y = monitor_position.y + monitor_size.height as i32 - placement.height as i32;
-    let left_x = monitor_position.x + placement.left;
+    let bottom_y = monitor_position.y + monitor_size.height as i32 - height as i32;
+    let left_x = monitor_position.x + left;
+
+    eprintln!(
+        "Control Strip: place_window_bottom_left size={width}x{height} monitor_pos=({},{}) monitor_size={}x{} -> pos=({left_x},{bottom_y})",
+        monitor_position.x, monitor_position.y, monitor_size.width, monitor_size.height
+    );
 
     window.set_position(PhysicalPosition::new(left_x, bottom_y))
 }

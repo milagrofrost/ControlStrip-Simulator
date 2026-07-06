@@ -122,7 +122,6 @@
   align-items: stretch;
   max-width: 260px;
   padding: 1px;
-  transform: translateY(calc(-100% - 3px));
   border-width: 1px;
   border-style: solid;
   border-color: #fff #555 #555 #fff;

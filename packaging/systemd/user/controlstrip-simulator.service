@@ -1,0 +1,15 @@
+[Unit]
+Description=ControlStrip Simulator
+Documentation=https://github.com/milagrofrost/ControlStrip-Simulator
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/controlstrip-simulator
+Restart=on-failure
+RestartSec=2
+WorkingDirectory=%h/.local/share/control-strip
+
+[Install]
+WantedBy=default.target

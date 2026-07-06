@@ -63,6 +63,7 @@ export type ControlStripSizingOptions = {
 export type ControlStripOptions = {
   onLaunchPinnedApp?: (item: ControlStripItem) => void;
   onFocusAppWindows?: (item: ControlStripItem) => void;
+  onContentResize?: (size: { width: number; height: number }) => void;
   sizing?: ControlStripSizingOptions;
 };
 
@@ -97,6 +98,9 @@ type OpenWindowMenu = {
     width: number;
     bottom: number;
     right: number;
+    // Viewport height captured with the rect, so the menu can be anchored to the
+    // strip's distance-from-bottom and stay put when the window is resized.
+    viewportHeight: number;
   };
 };
 
@@ -149,6 +153,7 @@ export function createControlStrip(
   let longPressTriggered = false;
   let openWindowMenu: OpenWindowMenu | null = null;
   let snapBackTimer: number | null = null;
+  let contentResizeFrame: number | null = null;
   const eventController = new AbortController();
 
   const strip = document.createElement('section') as ControlStripElement;
@@ -472,6 +477,56 @@ export function createControlStrip(
     { signal: eventController.signal }
   );
 
+  // Measure the union footprint of everything actually drawn (strip, empty-state
+  // message, open window menu) so the host window can be shrunk to hug it. The strip
+  // is bottom-left anchored, so height is measured up from the viewport bottom, which
+  // is invariant to the window height we are about to set (no feedback loop).
+  const measureContent = (): { width: number; height: number } | null => {
+    const rects: DOMRect[] = [];
+    const trackRect = track.getBoundingClientRect();
+    if (trackRect.width > 0 && trackRect.height > 0) {
+      rects.push(trackRect);
+    }
+    if (!emptyMessage.hidden) {
+      rects.push(emptyMessage.getBoundingClientRect());
+    }
+    const menu = menuLayer.querySelector('.control-strip__window-menu');
+    if (menu) {
+      rects.push(menu.getBoundingClientRect());
+    }
+
+    if (rects.length === 0) {
+      return null;
+    }
+
+    let right = 0;
+    let top = window.innerHeight;
+    for (const rect of rects) {
+      right = Math.max(right, rect.right);
+      top = Math.min(top, rect.top);
+    }
+
+    // +2 covers the strip's 1px drop-shadow filter so it is never clipped.
+    return {
+      width: Math.max(1, Math.ceil(right) + 2),
+      height: Math.max(1, Math.ceil(window.innerHeight - top) + 2)
+    };
+  };
+
+  const scheduleContentResize = (): void => {
+    if (!options.onContentResize || contentResizeFrame !== null) {
+      return;
+    }
+
+    contentResizeFrame = window.requestAnimationFrame(() => {
+      contentResizeFrame = null;
+      const size = measureContent();
+      if (size) {
+        options.onContentResize?.(size);
+      }
+    });
+  };
+
   const render = (): void => {
     const visibleItems = items.slice(visibleStart, visibleStart + visibleCount);
     const canScrollLeft = !isCollapsed && visibleStart > 0;
@@ -550,6 +605,7 @@ export function createControlStrip(
     );
 
     track.replaceChildren(...trackParts);
+    scheduleContentResize();
   };
 
   const beginPaneLongPress = (item: ControlStripItem, anchorRect: AnchorRect): void => {
@@ -571,7 +627,8 @@ export function createControlStrip(
           top: anchorRect.top,
           width: anchorRect.width,
           bottom: anchorRect.bottom,
-          right: anchorRect.right
+          right: anchorRect.right,
+          viewportHeight: anchorRect.viewportHeight
         }
       };
       renderMenu();
@@ -594,7 +651,8 @@ export function createControlStrip(
         top: rect.top,
         width: rect.width,
         bottom: rect.bottom,
-        right: rect.right
+        right: rect.right,
+        viewportHeight: window.innerHeight
       };
 
       activePanePress = {
@@ -637,6 +695,8 @@ export function createControlStrip(
 
   const renderMenu = (): void => {
     menuLayer.replaceChildren();
+    // Always re-measure: opening grows the window, closing shrinks it back.
+    scheduleContentResize();
 
     if (!openWindowMenu) {
       return;
@@ -684,6 +744,10 @@ export function createControlStrip(
   strip.remove = () => {
     clearLongPressTimer();
     clearSnapBackTimer();
+    if (contentResizeFrame !== null) {
+      window.cancelAnimationFrame(contentResizeFrame);
+      contentResizeFrame = null;
+    }
     eventController.abort();
     removeStrip();
   };
@@ -790,8 +854,11 @@ function createWindowMenu(
 ): HTMLElement {
   const menu = document.createElement('div');
   menu.className = 'control-strip__window-menu';
+  // Anchor to the pane's distance from the viewport bottom (invariant when the
+  // window is resized to hug content) and grow upward from there.
+  const bottomOffset = openWindowMenu.anchorRect.viewportHeight - openWindowMenu.anchorRect.top + 3;
   menu.style.left = `${openWindowMenu.anchorRect.left}px`;
-  menu.style.top = `${openWindowMenu.anchorRect.top}px`;
+  menu.style.bottom = `${bottomOffset}px`;
   menu.style.minWidth = `${openWindowMenu.anchorRect.width}px`;
   menu.setAttribute('role', 'menu');
   menu.setAttribute('aria-label', `${item.label} windows`);

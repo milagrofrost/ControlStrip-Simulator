@@ -15,7 +15,7 @@
         "title": "ControlStrip Simulator",
         "width": 600,
         "height": 200,
-        "resizable": false,
+        "resizable": true,
         "decorations": false,
         "transparent": true,
         "visible": false

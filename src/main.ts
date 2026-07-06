@@ -5,6 +5,7 @@ import {
   focusAppWindows,
   launchPinnedApp,
   loadControlStripModel,
+  resizeStripWindow,
   startRunningWindowPolling
 } from './controlStripModel';
 
@@ -32,6 +33,9 @@ async function bootstrap(): Promise<void> {
       window.setTimeout(() => {
         void focusAppWindows(item.id);
       }, 0);
+    },
+    onContentResize: ({ width, height }) => {
+      resizeStripWindow(width, height);
     }
   });
   const stopPolling = startRunningWindowPolling((runningWindows) => {
