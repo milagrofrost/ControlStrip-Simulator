@@ -275,6 +275,23 @@ window:
 
 The backend anchors the strip to the physical bottom of the monitor. The frontend then measures the actual visible strip and asks Tauri to resize the transparent window to the content footprint.
 
+### `screenCorner`
+
+`screenCorner` controls the visual mask used when the strip sits against a rounded bottom-left display corner.
+
+```yaml
+screenCorner:
+  enabled: true
+  position: bottom-left
+  radius: 18
+  color: "#000000"
+```
+
+- `enabled`: show or hide the visual corner overlay.
+- `position`: currently supports `bottom-left`.
+- `radius`: corner radius in CSS pixels.
+- `color`: overlay color.
+
 ### `strip`
 
 `strip` controls how many panes are visible and how tail-drag resizing behaves.

@@ -5,6 +5,7 @@ import type { ControlStripItem, ControlStripWindow } from './ControlStrip';
 type BackendControlStripModel = {
   items: BackendControlStripItem[];
   strip?: BackendStripBehavior;
+  screenCorner?: BackendScreenCornerConfig;
 };
 
 type BackendControlStripItem = Omit<ControlStripItem, 'icon'> & {
@@ -14,6 +15,7 @@ type BackendControlStripItem = Omit<ControlStripItem, 'icon'> & {
 export type ControlStripModel = {
   items: ControlStripItem[];
   strip: ControlStripSizingConfig;
+  screenCorner: ScreenCornerConfig;
 };
 
 export type ControlStripSizingConfig = {
@@ -21,9 +23,23 @@ export type ControlStripSizingConfig = {
   snapBackSeconds: number;
 };
 
+export type ScreenCornerConfig = {
+  enabled: boolean;
+  position: 'bottom-left' | string;
+  radius: number;
+  color: string;
+};
+
 type BackendStripBehavior = {
   visibleIcons?: number | null;
   snapBackSeconds?: number;
+};
+
+type BackendScreenCornerConfig = {
+  enabled?: boolean;
+  position?: string;
+  radius?: number;
+  color?: string;
 };
 
 export type RunningWindow = {
@@ -51,7 +67,8 @@ export async function loadControlStripModel(): Promise<ControlStripModel> {
       strip: {
         visibleIcons: null,
         snapBackSeconds: 10
-      }
+      },
+      screenCorner: defaultScreenCornerConfig()
     };
   }
 
@@ -62,7 +79,8 @@ export async function loadControlStripModel(): Promise<ControlStripModel> {
       strip: {
         visibleIcons: model.strip?.visibleIcons ?? null,
         snapBackSeconds: model.strip?.snapBackSeconds ?? 10
-      }
+      },
+      screenCorner: normalizeScreenCornerConfig(model.screenCorner)
     };
   } catch (error) {
     console.error('Control Strip: failed to load pinned apps', error);
@@ -71,9 +89,38 @@ export async function loadControlStripModel(): Promise<ControlStripModel> {
       strip: {
         visibleIcons: null,
         snapBackSeconds: 10
-      }
+      },
+      screenCorner: defaultScreenCornerConfig()
     };
   }
+}
+
+function defaultScreenCornerConfig(): ScreenCornerConfig {
+  return {
+    enabled: true,
+    position: 'bottom-left',
+    radius: 18,
+    color: '#000000'
+  };
+}
+
+function normalizeScreenCornerConfig(config?: BackendScreenCornerConfig): ScreenCornerConfig {
+  const defaults = defaultScreenCornerConfig();
+
+  return {
+    enabled: config?.enabled ?? defaults.enabled,
+    position: config?.position ?? defaults.position,
+    radius: normalizeScreenCornerRadius(config?.radius, defaults.radius),
+    color: config?.color ?? defaults.color
+  };
+}
+
+function normalizeScreenCornerRadius(radius: number | null | undefined, fallback: number): number {
+  if (typeof radius !== 'number' || !Number.isFinite(radius)) {
+    return fallback;
+  }
+
+  return Math.max(0, radius);
 }
 
 export async function loadRunningWindows(): Promise<RunningWindowsResult> {

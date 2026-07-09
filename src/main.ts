@@ -24,6 +24,7 @@ async function bootstrap(): Promise<void> {
   let items = model.items;
   const strip = createControlStrip(items, {
     sizing: model.strip,
+    screenCorner: model.screenCorner,
     onLaunchPinnedApp: (item) => {
       window.setTimeout(() => {
         void launchPinnedApp(item.id);

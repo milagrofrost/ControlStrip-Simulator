@@ -60,11 +60,19 @@ export type ControlStripSizingOptions = {
   snapBackSeconds?: number;
 };
 
+export type ScreenCornerOptions = {
+  enabled?: boolean;
+  position?: 'bottom-left' | string;
+  radius?: number;
+  color?: string;
+};
+
 export type ControlStripOptions = {
   onLaunchPinnedApp?: (item: ControlStripItem) => void;
   onFocusAppWindows?: (item: ControlStripItem) => void;
   onContentResize?: (size: { width: number; height: number }) => void;
   sizing?: ControlStripSizingOptions;
+  screenCorner?: ScreenCornerOptions;
 };
 
 export type PinnedAppConfig = {
@@ -163,6 +171,8 @@ export function createControlStrip(
   const track = document.createElement('div');
   track.className = 'control-strip__track';
 
+  const screenCorner = createScreenCorner(options.screenCorner);
+
   const menuLayer = document.createElement('div');
   menuLayer.className = 'control-strip__menu-layer';
 
@@ -170,7 +180,7 @@ export function createControlStrip(
   emptyMessage.className = 'control-strip__empty-message';
   emptyMessage.textContent = 'No pinned apps';
 
-  strip.append(track, emptyMessage, menuLayer, createAssetPreload());
+  strip.append(track, screenCorner, emptyMessage, menuLayer, createAssetPreload());
 
   const setPressedPart = (nextPressedPart: PressedPart): void => {
     if (pressedPart === nextPressedPart) {
@@ -780,6 +790,30 @@ function createImagePart(
   }
 
   return image;
+}
+
+function createScreenCorner(options: ScreenCornerOptions | undefined): HTMLElement {
+  const corner = document.createElement('div');
+  const enabled = options?.enabled ?? true;
+  const position = options?.position ?? 'bottom-left';
+  const radius = normalizeScreenCornerRadius(options?.radius);
+
+  corner.className = 'control-strip__screen-corner';
+  corner.setAttribute('aria-hidden', 'true');
+  corner.hidden = !enabled || position !== 'bottom-left' || radius <= 0;
+  corner.style.width = `${radius}px`;
+  corner.style.height = `${radius}px`;
+  corner.style.background = `radial-gradient(circle at top right, transparent 0 ${radius}px, ${options?.color ?? '#000000'} ${radius}px)`;
+
+  return corner;
+}
+
+function normalizeScreenCornerRadius(radius: number | null | undefined): number {
+  if (typeof radius !== 'number' || !Number.isFinite(radius)) {
+    return 18;
+  }
+
+  return Math.max(0, radius);
 }
 
 function createPane(

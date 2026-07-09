@@ -14,12 +14,21 @@ const DEFAULT_WINDOW_LEFT: i32 = 71;
 const DEFAULT_WINDOW_WIDTH: u32 = 600;
 const DEFAULT_WINDOW_HEIGHT: u32 = 200;
 const DEFAULT_SNAP_BACK_SECONDS: u64 = 10;
-const DEFAULT_CONFIG: &str = r#"# ControlStrip Simulator config
+const DEFAULT_SCREEN_CORNER_RADIUS: u32 = 18;
+const DEFAULT_SCREEN_CORNER_COLOR: &str = "#000000";
+const DEFAULT_SCREEN_CORNER_POSITION: &str = "bottom-left";
+const DEFAULT_CONFIG: &str = r##"# ControlStrip Simulator config
 # Window placement is native Tauri window geometry in physical screen pixels.
 window:
   left: 71
   width: 600
   height: 200
+
+screenCorner:
+  enabled: true
+  position: bottom-left
+  radius: 18
+  color: "#000000"
 
 # Optional strip sizing behavior. Omit visible_icons to show all panes and expand
 # as new panes appear. Set it to snap back to that many icons after tail dragging.
@@ -37,13 +46,15 @@ window:
 #       wm_class: "chromium"
 #       title_contains: "Weather"
 pinned_apps: []
-"#;
+"##;
 
 #[derive(Debug, Deserialize)]
 #[serde(default)]
 struct ControlStripConfig {
     window: WindowPlacementConfig,
     strip: StripBehaviorConfig,
+    #[serde(rename = "screenCorner")]
+    screen_corner: ScreenCornerConfig,
     #[serde(default)]
     pinned_apps: Vec<PinnedAppConfig>,
 }
@@ -63,11 +74,21 @@ struct StripBehaviorConfig {
     snap_back_seconds: u64,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default)]
+struct ScreenCornerConfig {
+    enabled: bool,
+    position: String,
+    radius: u32,
+    color: String,
+}
+
 impl Default for ControlStripConfig {
     fn default() -> Self {
         Self {
             window: WindowPlacementConfig::default(),
             strip: StripBehaviorConfig::default(),
+            screen_corner: ScreenCornerConfig::default(),
             pinned_apps: Vec::new(),
         }
     }
@@ -88,6 +109,17 @@ impl Default for StripBehaviorConfig {
         Self {
             visible_icons: None,
             snap_back_seconds: DEFAULT_SNAP_BACK_SECONDS,
+        }
+    }
+}
+
+impl Default for ScreenCornerConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            position: DEFAULT_SCREEN_CORNER_POSITION.to_string(),
+            radius: DEFAULT_SCREEN_CORNER_RADIUS,
+            color: DEFAULT_SCREEN_CORNER_COLOR.to_string(),
         }
     }
 }
@@ -132,6 +164,7 @@ struct ParsedDesktopFile {
 struct ControlStripModel {
     items: Vec<ControlStripItem>,
     strip: StripBehavior,
+    screen_corner: ScreenCorner,
 }
 
 #[derive(Debug, Serialize)]
@@ -140,6 +173,15 @@ struct StripBehavior {
     #[serde(skip_serializing_if = "Option::is_none")]
     visible_icons: Option<u32>,
     snap_back_seconds: u64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ScreenCorner {
+    enabled: bool,
+    position: String,
+    radius: u32,
+    color: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -215,6 +257,12 @@ fn get_control_strip_model() -> Result<ControlStripModel, String> {
         strip: StripBehavior {
             visible_icons: config.strip.visible_icons,
             snap_back_seconds: config.strip.snap_back_seconds,
+        },
+        screen_corner: ScreenCorner {
+            enabled: config.screen_corner.enabled,
+            position: config.screen_corner.position,
+            radius: config.screen_corner.radius,
+            color: config.screen_corner.color,
         },
     })
 }
