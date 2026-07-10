@@ -14,16 +14,20 @@ excluded_titles=()
 #     - "AtEase"
 #     - "Clippy"
 #
-# This intentionally parses only the simple exclude_titles string list, avoiding
-# another runtime dependency just to read the existing YAML configuration.
+# This intentionally parses only the simple window_filters.exclude_titles list,
+# avoiding another runtime dependency just to read the existing YAML config.
 if [ -f "$config_file" ]; then
   mapfile -t excluded_titles < <(
     awk '
-      /^[[:space:]]*exclude_titles:[[:space:]]*$/ {
+      /^[^[:space:]]/ {
+        in_window_filters = ($0 ~ /^window_filters:[[:space:]]*$/)
+        in_exclude_titles = 0
+      }
+      in_window_filters && /^[[:space:]]+exclude_titles:[[:space:]]*$/ {
         in_exclude_titles = 1
         next
       }
-      in_exclude_titles && /^[[:space:]]*-[[:space:]]*/ {
+      in_window_filters && in_exclude_titles && /^[[:space:]]+-[[:space:]]*/ {
         value = $0
         sub(/^[[:space:]]*-[[:space:]]*/, "", value)
         sub(/[[:space:]]+#.*$/, "", value)
@@ -31,7 +35,7 @@ if [ -f "$config_file" ]; then
         if (value != "") print value
         next
       }
-      in_exclude_titles && $0 !~ /^[[:space:]]*$/ {
+      in_window_filters && in_exclude_titles && $0 !~ /^[[:space:]]*$/ {
         in_exclude_titles = 0
       }
     ' "$config_file"
