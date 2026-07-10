@@ -30,6 +30,13 @@ screenCorner:
   radius: 18
   color: "#000000"
 
+# Exact, case-sensitive window titles that should not appear in Control Strip.
+window_filters:
+  exclude_titles:
+    - "AtEase"
+    - "Clippy"
+    - "piforma-panel"
+
 # Optional strip sizing behavior. Omit visible_icons to show all panes and expand
 # as new panes appear. Set it to snap back to that many icons after tail dragging.
 # strip:
@@ -338,12 +345,9 @@ fn resize_strip_window(
     let scale = window
         .scale_factor()
         .map_err(|error| format!("Failed to read scale factor: {error}"))?;
-    // width/height arrive as CSS logical pixels; window geometry is physical pixels.
     let physical_width = ((width * scale).ceil() as i64).clamp(1, u32::MAX as i64) as u32;
     let physical_height = ((height * scale).ceil() as i64).clamp(1, u32::MAX as i64) as u32;
 
-    // Defensive: if the window still carries non-resizable size hints from a stale
-    // config, set_size gets clamped by the compositor. Clear them before resizing.
     if let Err(error) = window.set_resizable(true) {
         eprintln!("Control Strip: could not mark window resizable: {error}");
     }
@@ -683,20 +687,16 @@ fn parse_desktop_file(contents: &str) -> ParsedDesktopFile {
 
     for raw_line in contents.lines() {
         let line = raw_line.trim();
-
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-
         if line.starts_with('[') && line.ends_with(']') {
             in_desktop_entry = line == "[Desktop Entry]";
             continue;
         }
-
         if !in_desktop_entry {
             continue;
         }
-
         if let Some((key, value)) = line.split_once('=') {
             values.insert(key.trim().to_string(), unescape_desktop_value(value.trim()));
         }
@@ -720,19 +720,15 @@ fn validate_desktop_file(desktop: &ParsedDesktopFile) -> Option<String> {
     if desktop.name.as_deref().unwrap_or("").trim().is_empty() {
         return Some("Missing required Name".to_string());
     }
-
     if desktop.exec.as_deref().unwrap_or("").trim().is_empty() {
         return Some("Missing required Exec".to_string());
     }
-
     if !matches!(desktop.r#type.as_deref(), Some("Application")) {
         return Some("Type must be Application".to_string());
     }
-
     if desktop.hidden == Some(true) {
         return Some("Hidden=true".to_string());
     }
-
     None
 }
 
@@ -741,13 +737,11 @@ fn build_match_info(
     startup_wm_class: Option<String>,
 ) -> Option<WindowMatch> {
     let startup_wm_class = startup_wm_class.filter(|value| !value.trim().is_empty());
-
     match (configured, startup_wm_class) {
         (Some(mut configured), Some(startup)) => {
             if configured.wm_class.is_none() {
                 configured.wm_class = Some(startup);
             }
-
             Some(configured)
         }
         (Some(configured), None) => Some(configured),
@@ -824,7 +818,6 @@ fn window_group_key(window: &RunningWindow) -> &str {
 fn normalize_temporary_group_id(wm_class: &str) -> String {
     let mut id = String::new();
     let mut previous_was_separator = false;
-
     for character in wm_class.trim().to_ascii_lowercase().chars() {
         if character.is_ascii_alphanumeric() {
             id.push(character);
@@ -834,7 +827,6 @@ fn normalize_temporary_group_id(wm_class: &str) -> String {
             previous_was_separator = true;
         }
     }
-
     let id = id.trim_matches('-').to_string();
     if id.is_empty() {
         "unknown".to_string()
@@ -854,30 +846,23 @@ fn is_valid_window_id(window_id: &str) -> bool {
     if let Some(hex) = window_id.strip_prefix("0x") {
         return !hex.is_empty() && hex.chars().all(|character| character.is_ascii_hexdigit());
     }
-
     !window_id.is_empty() && window_id.chars().all(|character| character.is_ascii_digit())
 }
 
 fn resolve_icon(icon: &str) -> Option<String> {
     let icon = icon.trim();
-
     if icon.is_empty() {
         return None;
     }
-
     let icon_path = expand_home(icon);
     if icon_path.is_absolute() {
-        return icon_path
-            .exists()
-            .then(|| icon_path.display().to_string());
+        return icon_path.exists().then(|| icon_path.display().to_string());
     }
-
     for path in icon_search_roots() {
         if let Some(icon_path) = find_icon_in_root(&path, icon) {
             return Some(icon_path.display().to_string());
         }
     }
-
     eprintln!("Control Strip: unresolved icon {}", icon);
     None
 }
@@ -886,13 +871,11 @@ fn find_icon_in_root(root: &Path, icon: &str) -> Option<PathBuf> {
     if !root.exists() {
         return None;
     }
-
     for candidate in direct_icon_candidates(root, icon) {
         if candidate.exists() {
             return Some(candidate);
         }
     }
-
     let wanted_names = icon_file_names(icon);
     WalkDir::new(root)
         .follow_links(false)
@@ -902,7 +885,6 @@ fn find_icon_in_root(root: &Path, icon: &str) -> Option<PathBuf> {
             if !entry.file_type().is_file() {
                 return None;
             }
-
             let file_name = entry.file_name().to_string_lossy();
             wanted_names
                 .iter()
@@ -923,7 +905,6 @@ fn icon_file_names(icon: &str) -> Vec<String> {
     if path.extension().is_some() {
         return vec![icon.to_string()];
     }
-
     [".png", ".svg", ".xpm"]
         .iter()
         .map(|extension| format!("{icon}{extension}"))
@@ -932,11 +913,9 @@ fn icon_file_names(icon: &str) -> Vec<String> {
 
 fn icon_search_roots() -> Vec<PathBuf> {
     let mut roots = Vec::new();
-
     if let Some(home) = dirs::home_dir() {
         roots.push(home.join(".local/share/icons"));
     }
-
     roots.push(PathBuf::from("/usr/share/pixmaps"));
     roots.push(PathBuf::from("/usr/share/icons"));
     roots
@@ -965,7 +944,6 @@ fn expand_home(path: &str) -> PathBuf {
             return home.join(rest);
         }
     }
-
     PathBuf::from(path)
 }
 
@@ -989,7 +967,6 @@ fn sanitize_id(path: &Path) -> String {
         .collect::<String>()
         .trim_matches('-')
         .to_string();
-
     if id.is_empty() {
         "pinned-app".to_string()
     } else {
