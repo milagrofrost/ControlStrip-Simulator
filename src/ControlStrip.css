@@ -42,19 +42,14 @@
 
 .control-strip__pane {
   position: relative;
+  box-sizing: border-box;
   width: 27px;
+  min-width: 27px;
+  max-width: 27px;
   height: 24px;
   background-repeat: no-repeat;
   background-position: 0 0;
   background-size: auto;
-}
-
-.control-strip__pane.is-open {
-  width: 27px;
-}
-
-.control-strip__pane.is-pressed {
-  width: 30px;
 }
 
 .control-strip__pane.is-disabled {
