@@ -39,6 +39,27 @@ async function bootstrap(): Promise<void> {
       resizeStripWindow(width, height);
     }
   });
+
+  // Window menu rows already carry their owning app id. Handle the click at the
+  // strip boundary so selecting a minimized window performs a real restore/focus
+  // action instead of only closing the menu and logging the selection.
+  strip.addEventListener('click', (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) {
+      return;
+    }
+
+    const menuRow = target.closest<HTMLButtonElement>('.control-strip__window-menu-row');
+    const appId = menuRow?.dataset.appId;
+    if (!appId) {
+      return;
+    }
+
+    window.setTimeout(() => {
+      void focusAppWindows(appId);
+    }, 0);
+  });
+
   const stopPolling = startRunningWindowPolling((runningWindows) => {
     items = applyRunningWindowsToItems(items, runningWindows);
     strip.setItems(items);
