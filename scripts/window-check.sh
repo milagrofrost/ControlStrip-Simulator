@@ -6,7 +6,9 @@ set -euo pipefail
 
 windows_json="[]"
 
-for id in $(xdotool search --onlyvisible --name . 2>/dev/null || true); do
+# Do not use xdotool's --onlyvisible filter here. Minimized windows are still
+# running application windows and must remain available to the Control Strip.
+for id in $(xdotool search --name . 2>/dev/null || true); do
   type_raw="$(xprop -id "$id" _NET_WM_WINDOW_TYPE 2>/dev/null || true)"
   state_raw="$(xprop -id "$id" _NET_WM_STATE 2>/dev/null || true)"
   name_raw="$(xprop -id "$id" _NET_WM_NAME 2>/dev/null || true)"
