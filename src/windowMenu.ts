@@ -1,5 +1,5 @@
+import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { focusAppWindows } from './controlStripModel';
 import './WindowMenu.css';
 
 interface WindowMenuEntry {
@@ -21,6 +21,14 @@ function decodePayload(encoded: string): WindowMenuPayload {
   return JSON.parse(new TextDecoder().decode(bytes)) as WindowMenuPayload;
 }
 
+async function closePopup(): Promise<void> {
+  try {
+    await getCurrentWindow().close();
+  } catch (error) {
+    console.error('Control Strip: failed to close window menu', error);
+  }
+}
+
 export async function bootstrapWindowMenu(): Promise<void> {
   document.documentElement.classList.add('window-menu-document');
   document.body.classList.add('window-menu-body');
@@ -28,7 +36,7 @@ export async function bootstrapWindowMenu(): Promise<void> {
   const app = document.querySelector<HTMLDivElement>('#app');
   const encoded = new URLSearchParams(window.location.search).get('windowMenu');
   if (!app || !encoded) {
-    await getCurrentWindow().close();
+    await closePopup();
     return;
   }
 
@@ -48,9 +56,13 @@ export async function bootstrapWindowMenu(): Promise<void> {
       .filter(Boolean)
       .join(' ');
     row.textContent = windowItem.title;
-    row.addEventListener('click', async () => {
-      await focusAppWindows(payload.appId);
-      await getCurrentWindow().close();
+    row.addEventListener('pointerdown', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      void invoke('select_window_menu_item', { windowId: windowItem.id }).catch((error) => {
+        console.error('Control Strip: failed to select window', error);
+        void closePopup();
+      });
     });
     menu.append(row);
   }
@@ -59,14 +71,29 @@ export async function bootstrapWindowMenu(): Promise<void> {
 
   window.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') {
-      void getCurrentWindow().close();
+      void closePopup();
     }
   });
 
-  const unlisten = await getCurrentWindow().onFocusChanged(({ payload: focused }) => {
+  const popup = getCurrentWindow();
+  const unlisten = await popup.onFocusChanged(({ payload: focused }) => {
     if (!focused) {
       unlisten();
-      void getCurrentWindow().close();
+      void closePopup();
     }
   });
+
+  window.setTimeout(() => {
+    let missedFocusChecks = 0;
+    const focusPoll = window.setInterval(() => {
+      void popup.isFocused().then((focused) => {
+        missedFocusChecks = focused ? 0 : missedFocusChecks + 1;
+        if (missedFocusChecks >= 2) {
+          window.clearInterval(focusPoll);
+          unlisten();
+          void closePopup();
+        }
+      });
+    }, 100);
+  }, 250);
 }

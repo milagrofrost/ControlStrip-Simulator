@@ -1,8 +1,5 @@
 .window-menu-document,
-.window-menu-body,
-.window-menu-app {
-  width: 100%;
-  height: 100%;
+.window-menu-body {
   margin: 0;
   overflow: hidden;
   background: transparent;
@@ -13,10 +10,16 @@
   user-select: none;
 }
 
+.window-menu-app {
+  display: inline-block;
+  margin: 0;
+  background: transparent;
+}
+
 .popup-window-menu {
   box-sizing: border-box;
-  width: 100%;
-  height: 100%;
+  display: inline-block;
+  min-width: 100px;
   padding: 1px;
   border: 1px solid #111;
   background: #fff;

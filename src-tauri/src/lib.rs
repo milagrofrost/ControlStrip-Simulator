@@ -472,6 +472,7 @@ fn show_window_menu(
     .resizable(false)
     .skip_taskbar(true)
     .always_on_top(true)
+    .inner_size(logical_width, logical_height)
     .visible(false)
     .build()
     .map_err(|error| format!("Failed to create window menu: {error}"))?;
@@ -484,6 +485,16 @@ fn show_window_menu(
     menu.set_focus().map_err(|error| format!("Failed to focus window menu: {error}"))?;
 
     Ok(())
+}
+
+#[tauri::command]
+fn select_window_menu_item(app: tauri::AppHandle, window_id: String) -> Result<(), String> {
+    if let Some(menu) = app.get_webview_window("window-menu") {
+        if let Err(error) = menu.close() {
+            eprintln!("Control Strip: could not close window menu before selection: {error}");
+        }
+    }
+    focus_window(&window_id)
 }
 
 #[tauri::command]
@@ -580,6 +591,7 @@ pub fn run() {
             focus_app_windows,
             show_window_menu,
             hide_window_menu,
+            select_window_menu_item,
             resize_strip_window
         ])
         .run(tauri::generate_context!())
