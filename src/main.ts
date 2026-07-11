@@ -86,6 +86,7 @@ async function bootstrap(): Promise<void> {
     event.preventDefault();
     closeContextMenu();
 
+    const wmClass = getItemWmClass(item);
     const menu = document.createElement('div');
     menu.style.position = 'fixed';
     menu.style.left = '0';
@@ -111,9 +112,9 @@ async function bootstrap(): Promise<void> {
       try {
         const desktopFile = item.isPinned
           ? item.desktopFile
-          : await resolveDesktopFile(item.wmClass ?? '');
+          : await resolveDesktopFile(wmClass);
         if (!desktopFile) throw new Error(`No desktop file is available for ${item.label}`);
-        await setAppPinned(desktopFile, !item.isPinned, item.wmClass);
+        await setAppPinned(desktopFile, !item.isPinned, wmClass);
         await refreshItems();
       } catch (error) {
         console.error('Control Strip: failed to update pin state', error);
@@ -133,9 +134,8 @@ async function bootstrap(): Promise<void> {
     ignoreAction.style.background = 'transparent';
     ignoreAction.style.padding = '4px 10px';
     ignoreAction.style.textAlign = 'left';
-    ignoreAction.disabled = !(item.wmClass?.trim());
+    ignoreAction.disabled = !wmClass;
     ignoreAction.addEventListener('click', async () => {
-      const wmClass = item.wmClass?.trim();
       if (!wmClass) return;
       ignoreAction.disabled = true;
       try {
@@ -188,6 +188,10 @@ async function bootstrap(): Promise<void> {
   };
 
   document.body.append(strip);
+}
+
+function getItemWmClass(item: ControlStripItem): string {
+  return item.wmClass?.trim() || item.match?.wm_class?.trim() || '';
 }
 
 function keepStableItemOrder(
