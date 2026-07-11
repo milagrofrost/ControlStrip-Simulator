@@ -1,5 +1,6 @@
 import './style.css';
 import { createControlStrip } from './ControlStrip';
+import type { ControlStripItem } from './ControlStrip';
 import {
   applyRunningWindowsToItems,
   focusAppWindows,
@@ -61,7 +62,8 @@ async function bootstrap(): Promise<void> {
   });
 
   const stopPolling = startRunningWindowPolling((runningWindows) => {
-    items = applyRunningWindowsToItems(items, runningWindows);
+    const detectedItems = applyRunningWindowsToItems(items, runningWindows);
+    items = keepStableItemOrder(items, detectedItems);
     strip.setItems(items);
   });
   const removeStrip = strip.remove.bind(strip);
@@ -72,4 +74,37 @@ async function bootstrap(): Promise<void> {
   };
 
   document.body.append(strip);
+}
+
+function keepStableItemOrder(
+  previousItems: ControlStripItem[],
+  detectedItems: ControlStripItem[]
+): ControlStripItem[] {
+  const detectedById = new Map(detectedItems.map((item) => [item.id, item]));
+  const stableItems: ControlStripItem[] = [];
+
+  // Keep every surviving pane in its existing slot. This prevents changes in the
+  // xdotool/wmctrl discovery order from moving an icon underneath the pointer.
+  for (const previousItem of previousItems) {
+    const detectedItem = detectedById.get(previousItem.id);
+    if (!detectedItem) {
+      continue;
+    }
+
+    stableItems.push(detectedItem);
+    detectedById.delete(previousItem.id);
+  }
+
+  // Apps seen for the first time are appended in discovery order. Their position
+  // then remains fixed until the application closes and its pane is removed.
+  for (const detectedItem of detectedItems) {
+    if (!detectedById.has(detectedItem.id)) {
+      continue;
+    }
+
+    stableItems.push(detectedItem);
+    detectedById.delete(detectedItem.id);
+  }
+
+  return stableItems;
 }
