@@ -19,6 +19,9 @@ jobs:
           fetch-depth: 0
       - run: python3 scripts/apply_icon_data_url_fix.py
       - run: npm ci && npm run build
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
       - run: cargo check --manifest-path src-tauri/Cargo.toml
       - run: |
           git config user.name "github-actions[bot]"
