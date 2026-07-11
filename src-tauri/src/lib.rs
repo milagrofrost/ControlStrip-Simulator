@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::{thread, time::Duration};
 
 use serde::{Deserialize, Serialize};
@@ -649,28 +649,37 @@ fn validate_launch_desktop_file(config: &PinnedAppConfig) -> Result<PathBuf, Str
 fn launch_desktop_file(desktop_file: &str) -> Result<(), String> {
     let gio_result = spawn_launcher("gio", &["launch", desktop_file]);
     if gio_result.is_ok() {
-        eprintln!("Control Strip: launched {desktop_file} with gio");
+        eprintln!("Control Strip: handed {desktop_file} to gio");
         return Ok(());
     }
 
-    let dex_result = spawn_launcher("dex", &[desktop_file]);
-    if dex_result.is_ok() {
-        eprintln!("Control Strip: launched {desktop_file} with dex");
+    let desktop_id = Path::new(desktop_file)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| format!("Desktop file name is not valid UTF-8: {desktop_file}"))?;
+
+    let gtk_result = spawn_launcher("gtk-launch", &[desktop_id]);
+    if gtk_result.is_ok() {
+        eprintln!("Control Strip: handed {desktop_file} to gtk-launch");
         return Ok(());
     }
 
     Err(format!(
-        "Failed to launch {desktop_file}. gio: {}; dex: {}",
+        "Failed to hand {desktop_file} to the desktop launcher. gio: {}; gtk-launch: {}",
         gio_result.unwrap_err(),
-        dex_result.unwrap_err()
+        gtk_result.unwrap_err()
     ))
 }
 
 fn spawn_launcher(program: &str, args: &[&str]) -> Result<(), String> {
-    match Command::new(program).args(args).spawn() {
-        Ok(_child) => Ok(()),
-        Err(error) => Err(format!("{program} could not be started: {error}")),
-    }
+    Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map(|_child| ())
+        .map_err(|error| format!("{program} could not be started: {error}"))
 }
 
 fn ensure_config_file() -> Result<PathBuf, String> {
