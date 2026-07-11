@@ -5,8 +5,64 @@ set -euo pipefail
 #   sudo apt install xdotool x11-utils jq
 
 windows_json="[]"
+config_file="${XDG_DATA_HOME:-$HOME/.local/share}/control-strip/config.yaml"
+excluded_titles=()
 
-for id in $(xdotool search --onlyvisible --name . 2>/dev/null || true); do
+# Read exact window titles from:
+# window_filters:
+#   exclude_titles:
+#     - "AtEase"
+#     - "clippy"
+#
+# This intentionally parses only the simple window_filters.exclude_titles list,
+# avoiding another runtime dependency just to read the existing YAML config.
+if [ -f "$config_file" ]; then
+  mapfile -t excluded_titles < <(
+    awk '
+      /^[[:space:]]*window_filters:[[:space:]]*$/ {
+        in_window_filters = 1
+        in_exclude_titles = 0
+        next
+      }
+      in_window_filters && /^[[:space:]]+exclude_titles:[[:space:]]*$/ {
+        in_exclude_titles = 1
+        next
+      }
+      in_window_filters && in_exclude_titles && /^[[:space:]]+-[[:space:]]*/ {
+        value = $0
+        sub(/^[[:space:]]*-[[:space:]]*/, "", value)
+        sub(/[[:space:]]+#.*$/, "", value)
+        gsub(/^[[:space:]\"'"'"']+|[[:space:]\"'"'"']+$/, "", value)
+        if (value != "") print value
+        next
+      }
+      in_window_filters && in_exclude_titles && $0 !~ /^[[:space:]]*$/ {
+        in_exclude_titles = 0
+      }
+      in_window_filters && /^[^[:space:]]/ {
+        in_window_filters = 0
+        in_exclude_titles = 0
+      }
+    ' "$config_file"
+  )
+fi
+
+is_excluded_title() {
+  local candidate="$1"
+  local excluded
+
+  for excluded in "${excluded_titles[@]}"; do
+    if [ "$candidate" = "$excluded" ]; then
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+# Do not use xdotool's --onlyvisible filter here. Minimized windows are still
+# running application windows and must remain available to the Control Strip.
+for id in $(xdotool search --name . 2>/dev/null || true); do
   type_raw="$(xprop -id "$id" _NET_WM_WINDOW_TYPE 2>/dev/null || true)"
   state_raw="$(xprop -id "$id" _NET_WM_STATE 2>/dev/null || true)"
   name_raw="$(xprop -id "$id" _NET_WM_NAME 2>/dev/null || true)"
@@ -33,6 +89,9 @@ for id in $(xdotool search --onlyvisible --name . 2>/dev/null || true); do
         | sed -n 's/^WM_NAME(STRING) = "\(.*\)"$/\1/p'
     )"
   fi
+
+  # Shell components can opt out of Control Strip task tracking by exact title.
+  is_excluded_title "$title" && continue
 
   # Extract WM_CLASS.
   # Usually: WM_CLASS(STRING) = "Navigator", "firefox"
