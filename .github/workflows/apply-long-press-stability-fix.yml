@@ -1,0 +1,26 @@
+name: Apply long press stability fix
+
+on:
+  push:
+    branches: [agent/icon-data-urls]
+
+permissions:
+  contents: write
+
+jobs:
+  apply-fix:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/icon-data-urls
+          fetch-depth: 0
+      - run: python3 scripts/apply_long_press_stability_fix.py
+      - run: npm ci && npm run build
+      - run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/ControlStrip.ts src/main.ts
+          git commit -m "Stabilize long press rendering"
+          git push origin HEAD:agent/icon-data-urls
