@@ -8,6 +8,7 @@ windows_json="[]"
 config_file="${XDG_DATA_HOME:-$HOME/.local/share}/control-strip/config.yaml"
 excluded_titles=()
 excluded_wm_classes=()
+excluded_wm_classes=()
 
 # Read exact window titles from:
 # window_filters:

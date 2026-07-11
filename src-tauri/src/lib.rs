@@ -58,6 +58,8 @@ struct ControlStripConfig {
     #[serde(default)]
     window_filters: WindowFiltersConfig,
     #[serde(default)]
+    window_filters: WindowFiltersConfig,
+    #[serde(default)]
     pinned_apps: Vec<PinnedAppConfig>,
 }
 
