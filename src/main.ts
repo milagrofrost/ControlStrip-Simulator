@@ -155,13 +155,11 @@ async function bootstrap(): Promise<void> {
     document.body.append(menu);
 
     const margin = 4;
+    const pointerGap = 2;
     const rect = menu.getBoundingClientRect();
     const maxLeft = Math.max(margin, window.innerWidth - rect.width - margin);
     const left = Math.min(Math.max(event.clientX, margin), maxLeft);
-    const spaceBelow = window.innerHeight - event.clientY - margin;
-    const top = spaceBelow >= rect.height
-      ? event.clientY
-      : Math.max(margin, event.clientY - rect.height);
+    const top = Math.max(margin, event.clientY - rect.height - pointerGap);
 
     menu.style.left = `${left}px`;
     menu.style.top = `${top}px`;
