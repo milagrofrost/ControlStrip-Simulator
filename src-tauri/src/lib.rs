@@ -435,6 +435,9 @@ fn show_window_menu(
     let parent_position = window
         .outer_position()
         .map_err(|error| format!("Failed to read Control Strip position: {error}"))?;
+    let parent_size = window
+        .outer_size()
+        .map_err(|error| format!("Failed to read Control Strip size: {error}"))?;
 
     let longest_title_chars = payload
         .windows
@@ -442,15 +445,16 @@ fn show_window_menu(
         .map(|entry| entry.title.chars().count())
         .max()
         .unwrap_or_else(|| payload.label.chars().count());
-    let logical_width = ((longest_title_chars as f64 * 7.0) + 24.0)
+    let logical_width = ((longest_title_chars as f64 * 5.0) + 16.0)
         .max(anchor_width)
-        .clamp(100.0, 360.0);
-    let logical_height = ((payload.windows.len().max(1) as f64) * 21.0) + 4.0;
+        .clamp(72.0, 300.0);
+    let logical_height = ((payload.windows.len().max(1) as f64) * 15.0) + 2.0;
     let physical_width = (logical_width * scale).ceil().max(1.0) as u32;
     let physical_height = (logical_height * scale).ceil().max(1.0) as u32;
 
     let mut x = parent_position.x + (anchor_left * scale).round() as i32;
-    let mut y = parent_position.y + (anchor_top * scale).round() as i32 - physical_height as i32 - 3;
+    let strip_height = (24.0 * scale).round() as i32;
+    let mut y = parent_position.y + parent_size.height as i32 - strip_height - physical_height as i32;
 
     if let Some(monitor) = window.current_monitor().map_err(|error| error.to_string())? {
         let monitor_position = monitor.position();
