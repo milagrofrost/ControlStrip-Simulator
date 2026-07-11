@@ -849,7 +849,9 @@ function createPane(
   }
 
   const icon = document.createElement('span');
-  icon.className = 'control-strip__icon';
+  icon.className = ['control-strip__icon', item.icon ? 'has-image' : 'has-text']
+    .filter(Boolean)
+    .join(' ');
   if (item.icon) {
     const iconImage = document.createElement('img');
     iconImage.className = 'control-strip__icon-image';
@@ -934,7 +936,8 @@ function hasSelectableWindows(item: ControlStripItem): boolean {
 }
 
 function getPlaceholderIcon(label: string): string {
-  return label.trim().charAt(0).toUpperCase() || '?';
+  const trimmed = label.trim();
+  return trimmed.slice(0, 2) || '?';
 }
 
 function attachPressHandlers(
