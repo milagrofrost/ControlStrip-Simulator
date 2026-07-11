@@ -56,6 +56,8 @@ struct ControlStripConfig {
     #[serde(rename = "screenCorner")]
     screen_corner: ScreenCornerConfig,
     #[serde(default)]
+    window_filters: WindowFiltersConfig,
+    #[serde(default)]
     pinned_apps: Vec<PinnedAppConfig>,
 }
 
@@ -89,6 +91,7 @@ impl Default for ControlStripConfig {
             window: WindowPlacementConfig::default(),
             strip: StripBehaviorConfig::default(),
             screen_corner: ScreenCornerConfig::default(),
+            window_filters: WindowFiltersConfig::default(),
             pinned_apps: Vec::new(),
         }
     }
@@ -122,6 +125,15 @@ impl Default for ScreenCornerConfig {
             color: DEFAULT_SCREEN_CORNER_COLOR.to_string(),
         }
     }
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(default)]
+struct WindowFiltersConfig {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    exclude_titles: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    exclude_wm_classes: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -335,6 +347,23 @@ fn set_app_pinned(desktop_file: String, pinned: bool, wm_class: Option<String>) 
 }
 
 #[tauri::command]
+fn ignore_wm_class(wm_class: String) -> Result<(), String> {
+    let normalized = wm_class.trim();
+    if normalized.is_empty() {
+        return Err("Window class is empty".to_string());
+    }
+    let config_path = ensure_config_file()?;
+    let mut config = load_config(&config_path)?;
+    if !config.window_filters.exclude_wm_classes.iter().any(|value| value.eq_ignore_ascii_case(normalized)) {
+        config.window_filters.exclude_wm_classes.push(normalized.to_string());
+    }
+    let yaml = serde_yaml::to_string(&config)
+        .map_err(|error| format!("Failed to serialize {}: {error}", config_path.display()))?;
+    fs::write(&config_path, yaml)
+        .map_err(|error| format!("Failed to write {}: {error}", config_path.display()))
+}
+
+#[tauri::command]
 fn resolve_desktop_file(wm_class: String) -> Result<String, String> {
     let hint = wm_class.trim().to_ascii_lowercase();
     if hint.is_empty() {
@@ -443,6 +472,7 @@ pub fn run() {
             get_running_windows,
             launch_pinned_app,
             set_app_pinned,
+            ignore_wm_class,
             resolve_desktop_file,
             focus_app_windows,
             resize_strip_window

@@ -7,6 +7,7 @@ set -euo pipefail
 windows_json="[]"
 config_file="${XDG_DATA_HOME:-$HOME/.local/share}/control-strip/config.yaml"
 excluded_titles=()
+excluded_wm_classes=()
 
 # Read exact window titles from:
 # window_filters:
@@ -45,7 +46,32 @@ if [ -f "$config_file" ]; then
       }
     ' "$config_file"
   )
+  mapfile -t excluded_wm_classes < <(
+    awk '
+      /^[[:space:]]*window_filters:[[:space:]]*$/ { in_window_filters = 1; in_exclude = 0; next }
+      in_window_filters && /^[[:space:]]+exclude_wm_classes:[[:space:]]*$/ { in_exclude = 1; next }
+      in_window_filters && in_exclude && /^[[:space:]]+-[[:space:]]*/ {
+        value = $0
+        sub(/^[[:space:]]*-[[:space:]]*/, "", value)
+        sub(/[[:space:]]+#.*$/, "", value)
+        gsub(/^[[:space:]"'"'"']+|[[:space:]"'"'"']+$/, "", value)
+        if (value != "") print tolower(value)
+        next
+      }
+      in_window_filters && in_exclude && $0 !~ /^[[:space:]]*$/ { in_exclude = 0 }
+      in_window_filters && /^[^[:space:]]/ { in_window_filters = 0; in_exclude = 0 }
+    ' "$config_file"
+  )
 fi
+
+is_excluded_wm_class() {
+  local candidate="${1,,}"
+  local excluded
+  for excluded in "${excluded_wm_classes[@]}"; do
+    if [ "$candidate" = "$excluded" ]; then return 0; fi
+  done
+  return 1
+}
 
 is_excluded_title() {
   local candidate="$1"
@@ -104,6 +130,10 @@ for id in $(xdotool search --name . 2>/dev/null || true); do
     echo "$class_raw" \
       | sed -n 's/^WM_CLASS(STRING) = "\(.*\)", "\(.*\)"$/\2/p'
   )"
+
+  wm_class_key="$wm_class_name"
+  [ -n "$wm_class_key" ] || wm_class_key="$wm_class_instance"
+  is_excluded_wm_class "$wm_class_key" && continue
 
   # Extract PID if present.
   pid="$(

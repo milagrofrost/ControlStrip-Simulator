@@ -4,6 +4,7 @@ import type { ControlStripItem } from './ControlStrip';
 import {
   applyRunningWindowsToItems,
   focusAppWindows,
+  ignoreWmClass,
   launchPinnedApp,
   loadControlStripModel,
   resizeStripWindow,
@@ -121,6 +122,36 @@ async function bootstrap(): Promise<void> {
       }
     });
     menu.append(action);
+
+    const ignoreAction = document.createElement('button');
+    ignoreAction.type = 'button';
+    ignoreAction.textContent = 'Ignore from Strip';
+    ignoreAction.style.display = 'block';
+    ignoreAction.style.width = '100%';
+    ignoreAction.style.border = '0';
+    ignoreAction.style.borderTop = '1px solid #999';
+    ignoreAction.style.background = 'transparent';
+    ignoreAction.style.padding = '4px 10px';
+    ignoreAction.style.textAlign = 'left';
+    ignoreAction.disabled = !(item.wmClass?.trim());
+    ignoreAction.addEventListener('click', async () => {
+      const wmClass = item.wmClass?.trim();
+      if (!wmClass) return;
+      ignoreAction.disabled = true;
+      try {
+        await ignoreWmClass(wmClass);
+        latestRunningWindows = latestRunningWindows.filter((windowItem) => {
+          const candidate = windowItem.wm_class.trim() || windowItem.wm_class_instance.trim();
+          return candidate.toLowerCase() !== wmClass.toLowerCase();
+        });
+        await refreshItems();
+      } catch (error) {
+        console.error('Control Strip: failed to ignore app', error);
+      } finally {
+        closeContextMenu();
+      }
+    });
+    menu.append(ignoreAction);
     document.body.append(menu);
 
     const margin = 4;

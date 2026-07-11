@@ -156,6 +156,11 @@ export async function setAppPinned(desktopFile: string, pinned: boolean, wmClass
   await invoke('set_app_pinned', { desktopFile, pinned, wmClass: wmClass ?? null });
 }
 
+export async function ignoreWmClass(wmClass: string): Promise<void> {
+  if (!isTauri()) return;
+  await invoke('ignore_wm_class', { wmClass });
+}
+
 export async function resolveDesktopFile(wmClass: string): Promise<string> {
   if (!isTauri()) throw new Error('Not running inside Tauri');
   return await invoke<string>('resolve_desktop_file', { wmClass });
