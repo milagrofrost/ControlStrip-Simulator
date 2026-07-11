@@ -4,9 +4,12 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::{thread, time::Duration};
 
-use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
+use base64::{
+    engine::general_purpose::{STANDARD as BASE64_STANDARD, URL_SAFE_NO_PAD},
+    Engine as _,
+};
 use serde::{Deserialize, Serialize};
-use tauri::{Manager, PhysicalPosition, PhysicalSize};
+use tauri::{Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindowBuilder};
 use walkdir::WalkDir;
 
 const CONFIG_DIR: &str = ".local/share/control-strip";
@@ -219,7 +222,7 @@ struct ControlStripItem {
     error: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ControlStripWindow {
     id: String,
@@ -393,6 +396,104 @@ fn resolve_desktop_file(wm_class: String) -> Result<String, String> {
     Err(format!("No installed .desktop file matched WM_CLASS {wm_class}"))
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WindowMenuPayload {
+    app_id: String,
+    label: String,
+    windows: Vec<ControlStripWindow>,
+}
+
+#[tauri::command]
+fn show_window_menu(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    app_id: String,
+    label: String,
+    windows: Vec<ControlStripWindow>,
+    anchor_left: f64,
+    anchor_top: f64,
+    anchor_width: f64,
+) -> Result<(), String> {
+    if let Some(existing) = app.get_webview_window("window-menu") {
+        existing.close().map_err(|error| format!("Failed to close existing window menu: {error}"))?;
+    }
+
+    let payload = WindowMenuPayload {
+        app_id,
+        label,
+        windows,
+    };
+    let payload_json = serde_json::to_vec(&payload)
+        .map_err(|error| format!("Failed to encode window menu payload: {error}"))?;
+    let encoded_payload = URL_SAFE_NO_PAD.encode(payload_json);
+    let url = format!("index.html?windowMenu={encoded_payload}");
+
+    let scale = window
+        .scale_factor()
+        .map_err(|error| format!("Failed to read scale factor: {error}"))?;
+    let parent_position = window
+        .outer_position()
+        .map_err(|error| format!("Failed to read Control Strip position: {error}"))?;
+
+    let longest_title_chars = payload
+        .windows
+        .iter()
+        .map(|entry| entry.title.chars().count())
+        .max()
+        .unwrap_or_else(|| payload.label.chars().count());
+    let logical_width = ((longest_title_chars as f64 * 7.0) + 24.0)
+        .max(anchor_width)
+        .clamp(100.0, 360.0);
+    let logical_height = ((payload.windows.len().max(1) as f64) * 21.0) + 4.0;
+    let physical_width = (logical_width * scale).ceil().max(1.0) as u32;
+    let physical_height = (logical_height * scale).ceil().max(1.0) as u32;
+
+    let mut x = parent_position.x + (anchor_left * scale).round() as i32;
+    let mut y = parent_position.y + (anchor_top * scale).round() as i32 - physical_height as i32 - 3;
+
+    if let Some(monitor) = window.current_monitor().map_err(|error| error.to_string())? {
+        let monitor_position = monitor.position();
+        let monitor_size = monitor.size();
+        let max_x = monitor_position.x + monitor_size.width as i32 - physical_width as i32;
+        let max_y = monitor_position.y + monitor_size.height as i32 - physical_height as i32;
+        x = x.clamp(monitor_position.x, max_x.max(monitor_position.x));
+        y = y.clamp(monitor_position.y, max_y.max(monitor_position.y));
+    }
+
+    let menu = WebviewWindowBuilder::new(
+        &app,
+        "window-menu",
+        WebviewUrl::App(url.into()),
+    )
+    .title("Window menu")
+    .decorations(false)
+    .transparent(true)
+    .resizable(false)
+    .skip_taskbar(true)
+    .always_on_top(true)
+    .visible(false)
+    .build()
+    .map_err(|error| format!("Failed to create window menu: {error}"))?;
+
+    menu.set_size(PhysicalSize::new(physical_width, physical_height))
+        .map_err(|error| format!("Failed to size window menu: {error}"))?;
+    menu.set_position(PhysicalPosition::new(x, y))
+        .map_err(|error| format!("Failed to position window menu: {error}"))?;
+    menu.show().map_err(|error| format!("Failed to show window menu: {error}"))?;
+    menu.set_focus().map_err(|error| format!("Failed to focus window menu: {error}"))?;
+
+    Ok(())
+}
+
+#[tauri::command]
+fn hide_window_menu(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(menu) = app.get_webview_window("window-menu") {
+        menu.close().map_err(|error| format!("Failed to close window menu: {error}"))?;
+    }
+    Ok(())
+}
+
 #[tauri::command]
 fn focus_app_windows(app_id: String) -> Result<(), String> {
     let windows = current_running_windows()?;
@@ -477,6 +578,8 @@ pub fn run() {
             ignore_wm_class,
             resolve_desktop_file,
             focus_app_windows,
+            show_window_menu,
+            hide_window_menu,
             resize_strip_window
         ])
         .run(tauri::generate_context!())

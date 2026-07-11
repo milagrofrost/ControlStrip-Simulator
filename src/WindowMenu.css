@@ -1,0 +1,49 @@
+.window-menu-document,
+.window-menu-body,
+.window-menu-app {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: transparent;
+}
+
+.window-menu-body {
+  font-family: Geneva, Arial, sans-serif;
+  user-select: none;
+}
+
+.popup-window-menu {
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  padding: 1px;
+  border: 1px solid #111;
+  background: #fff;
+  box-shadow: 2px 2px 0 rgb(0 0 0 / 45%);
+}
+
+.popup-window-menu__row {
+  display: block;
+  width: 100%;
+  height: 21px;
+  margin: 0;
+  padding: 2px 6px;
+  overflow: hidden;
+  border: 0;
+  background: transparent;
+  color: #111;
+  font: 12px/17px Geneva, Arial, sans-serif;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.popup-window-menu__row:hover,
+.popup-window-menu__row:focus-visible,
+.popup-window-menu__row.is-active {
+  outline: none;
+  background: #111;
+  color: #fff;
+}

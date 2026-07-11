@@ -71,6 +71,8 @@ export type ScreenCornerOptions = {
 export type ControlStripOptions = {
   onLaunchPinnedApp?: (item: ControlStripItem) => void;
   onFocusAppWindows?: (item: ControlStripItem) => void;
+  onOpenWindowMenu?: (item: ControlStripItem, anchor: { left: number; top: number; width: number }) => void;
+  onCloseWindowMenu?: () => void;
   onContentResize?: (size: { width: number; height: number }) => void;
   sizing?: ControlStripSizingOptions;
   screenCorner?: ScreenCornerOptions;
@@ -238,6 +240,7 @@ export function createControlStrip(
   };
 
   const closeWindowMenu = (): void => {
+    options.onCloseWindowMenu?.();
     if (!openWindowMenu) {
       return;
     }
@@ -673,6 +676,16 @@ export function createControlStrip(
       }
 
       longPressTriggered = true;
+
+      if (options.onOpenWindowMenu) {
+        options.onOpenWindowMenu(item, {
+          left: anchorRect.left,
+          top: anchorRect.top,
+          width: anchorRect.width
+        });
+        return;
+      }
+
       openWindowMenu = {
         itemId: item.id,
         anchorRect: {

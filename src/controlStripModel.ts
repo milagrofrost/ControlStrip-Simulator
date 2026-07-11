@@ -406,3 +406,36 @@ function toControlStripWindow(windowItem: RunningWindow): ControlStripWindow {
     title: windowItem.title
   };
 }
+
+
+export interface WindowMenuAnchor {
+  left: number;
+  top: number;
+  width: number;
+}
+
+export async function showWindowMenu(
+  item: ControlStripItem,
+  anchor: WindowMenuAnchor
+): Promise<void> {
+  if (!isTauri()) {
+    return;
+  }
+
+  await invoke('show_window_menu', {
+    appId: item.id,
+    label: item.label,
+    windows: item.windows ?? [],
+    anchorLeft: anchor.left,
+    anchorTop: anchor.top,
+    anchorWidth: anchor.width
+  });
+}
+
+export async function hideWindowMenu(): Promise<void> {
+  if (!isTauri()) {
+    return;
+  }
+
+  await invoke('hide_window_menu');
+}
