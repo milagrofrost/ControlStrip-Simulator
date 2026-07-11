@@ -1,0 +1,43 @@
+name: Fix duplicate window filters field
+
+on:
+  push:
+    branches:
+      - agent/pin-unpin-context-menu
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/pin-unpin-context-menu
+      - name: Remove duplicate field
+        shell: python
+        run: |
+          from pathlib import Path
+          path = Path('src-tauri/src/lib.rs')
+          text = path.read_text()
+          duplicate = '''    #[serde(default)]
+    window_filters: WindowFiltersConfig,
+    #[serde(default)]
+    window_filters: WindowFiltersConfig,
+'''
+          replacement = '''    #[serde(default)]
+    window_filters: WindowFiltersConfig,
+'''
+          count = text.count(duplicate)
+          if count != 1:
+              raise SystemExit(f'Expected one duplicate block, found {count}')
+          path.write_text(text.replace(duplicate, replacement, 1))
+      - name: Commit fix
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add src-tauri/src/lib.rs
+          git commit -m "Fix duplicate window filters config field"
+          git push
