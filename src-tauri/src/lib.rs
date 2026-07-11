@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::{thread, time::Duration};
 
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use serde::{Deserialize, Serialize};
 use tauri::{Manager, PhysicalPosition, PhysicalSize};
 use walkdir::WalkDir;
@@ -17,6 +18,7 @@ const DEFAULT_SNAP_BACK_SECONDS: u64 = 10;
 const DEFAULT_SCREEN_CORNER_RADIUS: u32 = 18;
 const DEFAULT_SCREEN_CORNER_COLOR: &str = "#000000";
 const DEFAULT_SCREEN_CORNER_POSITION: &str = "bottom-left";
+const MAX_ICON_BYTES: u64 = 1_048_576;
 const DEFAULT_CONFIG: &str = r##"# ControlStrip Simulator config
 # Window placement is native Tauri window geometry in physical screen pixels.
 window:
@@ -973,19 +975,71 @@ fn resolve_icon(icon: &str) -> Option<String> {
 
     let icon_path = expand_home(icon);
     if icon_path.is_absolute() {
-        return icon_path
-            .exists()
-            .then(|| icon_path.display().to_string());
+        return load_icon_data_url(&icon_path);
     }
 
     for path in icon_search_roots() {
         if let Some(icon_path) = find_icon_in_root(&path, icon) {
-            return Some(icon_path.display().to_string());
+            return load_icon_data_url(&icon_path);
         }
     }
 
     eprintln!("Control Strip: unresolved icon {}", icon);
     None
+}
+
+fn load_icon_data_url(path: &Path) -> Option<String> {
+    let metadata = match fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            eprintln!("Control Strip: could not read icon metadata for {}: {error}", path.display());
+            return None;
+        }
+    };
+
+    if !metadata.is_file() {
+        eprintln!("Control Strip: icon path is not a file: {}", path.display());
+        return None;
+    }
+
+    if metadata.len() > MAX_ICON_BYTES {
+        eprintln!(
+            "Control Strip: icon {} is too large ({} bytes; maximum {} bytes)",
+            path.display(),
+            metadata.len(),
+            MAX_ICON_BYTES
+        );
+        return None;
+    }
+
+    let mime_type = match path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| extension.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("png") => "image/png",
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("webp") => "image/webp",
+        Some("svg") => "image/svg+xml",
+        Some("xpm") => "image/x-xpixmap",
+        _ => {
+            eprintln!("Control Strip: unsupported icon type: {}", path.display());
+            return None;
+        }
+    };
+
+    match fs::read(path) {
+        Ok(bytes) => Some(format!(
+            "data:{mime_type};base64,{}",
+            BASE64_STANDARD.encode(bytes)
+        )),
+        Err(error) => {
+            eprintln!("Control Strip: could not read icon {}: {error}", path.display());
+            None
+        }
+    }
 }
 
 fn find_icon_in_root(root: &Path, icon: &str) -> Option<PathBuf> {

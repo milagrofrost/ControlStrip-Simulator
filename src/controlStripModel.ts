@@ -1,4 +1,4 @@
-import { convertFileSrc, invoke, isTauri } from '@tauri-apps/api/core';
+import { invoke, isTauri } from '@tauri-apps/api/core';
 
 import type { ControlStripItem, ControlStripWindow } from './ControlStrip';
 
@@ -296,7 +296,7 @@ export function applyRunningWindowsToItems(
 function normalizeBackendItem(item: BackendControlStripItem): ControlStripItem {
   return {
     ...item,
-    icon: item.icon ? convertFileSrc(item.icon) : undefined,
+    icon: item.icon ?? undefined,
     windows: item.windows ?? []
   };
 }
