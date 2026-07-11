@@ -62,7 +62,6 @@ async function bootstrap(): Promise<void> {
     }, 0);
   });
 
-
   let latestRunningWindows: Parameters<typeof applyRunningWindowsToItems>[1] = [];
   let contextMenu: HTMLDivElement | null = null;
 
@@ -88,8 +87,8 @@ async function bootstrap(): Promise<void> {
 
     const menu = document.createElement('div');
     menu.style.position = 'fixed';
-    menu.style.left = `${event.clientX}px`;
-    menu.style.top = `${event.clientY}px`;
+    menu.style.left = '0';
+    menu.style.top = '0';
     menu.style.zIndex = '10000';
     menu.style.padding = '3px';
     menu.style.border = '1px solid #000';
@@ -123,6 +122,18 @@ async function bootstrap(): Promise<void> {
     });
     menu.append(action);
     document.body.append(menu);
+
+    const margin = 4;
+    const rect = menu.getBoundingClientRect();
+    const maxLeft = Math.max(margin, window.innerWidth - rect.width - margin);
+    const left = Math.min(Math.max(event.clientX, margin), maxLeft);
+    const spaceBelow = window.innerHeight - event.clientY - margin;
+    const top = spaceBelow >= rect.height
+      ? event.clientY
+      : Math.max(margin, event.clientY - rect.height);
+
+    menu.style.left = `${left}px`;
+    menu.style.top = `${top}px`;
     contextMenu = menu;
   });
 
