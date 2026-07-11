@@ -29,6 +29,7 @@ async function bootstrap(): Promise<void> {
   let latestRunningWindows: Parameters<typeof applyRunningWindowsToItems>[1] = [];
   let contextMenu: HTMLDivElement | null = null;
   let stripContentSize = { width: 1, height: 24 };
+  let lastRequestedStripSize = { width: 0, height: 0 };
 
   const strip = createControlStrip(items, {
     sizing: model.strip,
@@ -46,9 +47,19 @@ async function bootstrap(): Promise<void> {
     onContentResize: ({ width, height }) => {
       stripContentSize = { width, height };
 
-      if (!contextMenu) {
-        resizeStripWindow(width, height);
+      if (contextMenu) {
+        return;
       }
+
+      if (
+        Math.abs(width - lastRequestedStripSize.width) < 1 &&
+        Math.abs(height - lastRequestedStripSize.height) < 1
+      ) {
+        return;
+      }
+
+      lastRequestedStripSize = { width, height };
+      resizeStripWindow(width, height);
     }
   });
 
