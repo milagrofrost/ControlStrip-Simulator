@@ -26,6 +26,10 @@ void bootstrap();
 async function bootstrap(): Promise<void> {
   const model = await loadControlStripModel();
   let items = model.items;
+  let latestRunningWindows: Parameters<typeof applyRunningWindowsToItems>[1] = [];
+  let contextMenu: HTMLDivElement | null = null;
+  let stripContentSize = { width: 1, height: 24 };
+
   const strip = createControlStrip(items, {
     sizing: model.strip,
     screenCorner: model.screenCorner,
@@ -40,7 +44,11 @@ async function bootstrap(): Promise<void> {
       }, 0);
     },
     onContentResize: ({ width, height }) => {
-      resizeStripWindow(width, height);
+      stripContentSize = { width, height };
+
+      if (!contextMenu) {
+        resizeStripWindow(width, height);
+      }
     }
   });
 
@@ -63,12 +71,11 @@ async function bootstrap(): Promise<void> {
     }, 0);
   });
 
-  let latestRunningWindows: Parameters<typeof applyRunningWindowsToItems>[1] = [];
-  let contextMenu: HTMLDivElement | null = null;
-
   const closeContextMenu = (): void => {
     contextMenu?.remove();
     contextMenu = null;
+
+    resizeStripWindow(stripContentSize.width, stripContentSize.height);
   };
 
   const refreshItems = async (): Promise<void> => {
@@ -77,7 +84,7 @@ async function bootstrap(): Promise<void> {
     strip.setItems(items);
   };
 
-  strip.addEventListener('contextmenu', (event) => {
+  strip.addEventListener('contextmenu', async (event) => {
     const target = event.target;
     if (!(target instanceof Element)) return;
     const pane = target.closest<HTMLElement>('.control-strip__pane');
@@ -92,6 +99,7 @@ async function bootstrap(): Promise<void> {
     menu.style.left = '0';
     menu.style.top = '0';
     menu.style.zIndex = '10000';
+    menu.style.visibility = 'hidden';
     menu.style.padding = '3px';
     menu.style.border = '1px solid #000';
     menu.style.background = '#fff';
@@ -157,13 +165,45 @@ async function bootstrap(): Promise<void> {
     const margin = 4;
     const pointerGap = 2;
     const rect = menu.getBoundingClientRect();
-    const maxLeft = Math.max(margin, window.innerWidth - rect.width - margin);
-    const left = Math.min(Math.max(event.clientX, margin), maxLeft);
-    const top = Math.max(margin, event.clientY - rect.height - pointerGap);
+
+    contextMenu = menu;
+
+    const expandedHeight =
+      stripContentSize.height +
+      rect.height +
+      pointerGap +
+      margin;
+
+    resizeStripWindow(stripContentSize.width, expandedHeight);
+
+    // Wait for Tauri to resize and re-anchor the native window.
+    await new Promise<void>((resolve) => {
+      window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(() => resolve());
+      });
+    });
+
+    const maxLeft = Math.max(
+      margin,
+      window.innerWidth - rect.width - margin
+    );
+
+    const left = Math.min(
+      Math.max(event.clientX, margin),
+      maxLeft
+    );
+
+    const top = Math.max(
+      margin,
+      window.innerHeight -
+        stripContentSize.height -
+        rect.height -
+        pointerGap
+    );
 
     menu.style.left = `${left}px`;
     menu.style.top = `${top}px`;
-    contextMenu = menu;
+    menu.style.visibility = 'visible';
   });
 
   window.addEventListener('pointerdown', (event) => {
