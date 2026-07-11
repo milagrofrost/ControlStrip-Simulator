@@ -48,7 +48,7 @@ screenCorner:
 pinned_apps: []
 "##;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(default)]
 struct ControlStripConfig {
     window: WindowPlacementConfig,
@@ -59,7 +59,7 @@ struct ControlStripConfig {
     pinned_apps: Vec<PinnedAppConfig>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(default)]
 struct WindowPlacementConfig {
     left: i32,
@@ -67,14 +67,14 @@ struct WindowPlacementConfig {
     height: u32,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(default)]
 struct StripBehaviorConfig {
     visible_icons: Option<u32>,
     snap_back_seconds: u64,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default)]
 struct ScreenCornerConfig {
     enabled: bool,
@@ -124,9 +124,11 @@ impl Default for ScreenCornerConfig {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct PinnedAppConfig {
     desktop_file: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    icon: Option<String>,
     #[serde(default)]
     r#match: Option<WindowMatch>,
 }
@@ -302,6 +304,65 @@ fn launch_pinned_app(app_id: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn set_app_pinned(desktop_file: String, pinned: bool, wm_class: Option<String>) -> Result<(), String> {
+    let config_path = ensure_config_file()?;
+    let mut config = load_config(&config_path)?;
+    let expanded = expand_home(&desktop_file);
+    let canonical = fs::canonicalize(&expanded)
+        .map_err(|error| format!("Failed to resolve {}: {error}", expanded.display()))?;
+    if canonical.extension().and_then(|value| value.to_str()) != Some("desktop") {
+        return Err(format!("Pinned application must be a .desktop file: {}", canonical.display()));
+    }
+    let canonical_string = canonical.display().to_string();
+    if pinned {
+        if !config.pinned_apps.iter().any(|item| expand_home(&item.desktop_file) == canonical) {
+            config.pinned_apps.push(PinnedAppConfig {
+                desktop_file: canonical_string,
+                icon: None,
+                r#match: wm_class.filter(|value| !value.trim().is_empty()).map(|value| WindowMatch {
+                    wm_class: Some(value),
+                    title_contains: None,
+                }),
+            });
+        }
+    } else {
+        config.pinned_apps.retain(|item| expand_home(&item.desktop_file) != canonical);
+    }
+    let yaml = serde_yaml::to_string(&config)
+        .map_err(|error| format!("Failed to serialize {}: {error}", config_path.display()))?;
+    fs::write(&config_path, yaml)
+        .map_err(|error| format!("Failed to write {}: {error}", config_path.display()))
+}
+
+#[tauri::command]
+fn resolve_desktop_file(wm_class: String) -> Result<String, String> {
+    let hint = wm_class.trim().to_ascii_lowercase();
+    if hint.is_empty() {
+        return Err("Window class is empty".to_string());
+    }
+    let mut roots = Vec::new();
+    if let Some(home) = dirs::home_dir() {
+        roots.push(home.join(".local/share/applications"));
+    }
+    roots.push(PathBuf::from("/usr/share/applications"));
+    for root in roots {
+        if !root.exists() { continue; }
+        for entry in WalkDir::new(root).follow_links(false).into_iter().filter_map(Result::ok) {
+            if !entry.file_type().is_file() || entry.path().extension().and_then(|value| value.to_str()) != Some("desktop") { continue; }
+            let Ok(contents) = fs::read_to_string(entry.path()) else { continue; };
+            let desktop = parse_desktop_file(&contents);
+            if validate_desktop_file(&desktop).is_some() { continue; }
+            let startup = desktop.startup_wm_class.as_deref().unwrap_or("").trim().to_ascii_lowercase();
+            let stem = entry.path().file_stem().and_then(|value| value.to_str()).unwrap_or("").to_ascii_lowercase();
+            if startup == hint || stem == hint || startup.contains(&hint) || stem.contains(&hint) {
+                return Ok(entry.path().display().to_string());
+            }
+        }
+    }
+    Err(format!("No installed .desktop file matched WM_CLASS {wm_class}"))
+}
+
+#[tauri::command]
 fn focus_app_windows(app_id: String) -> Result<(), String> {
     let windows = current_running_windows()?;
     let window_ids = resolve_focus_window_ids(&app_id, &windows)?;
@@ -381,6 +442,8 @@ pub fn run() {
             get_control_strip_model,
             get_running_windows,
             launch_pinned_app,
+            set_app_pinned,
+            resolve_desktop_file,
             focus_app_windows,
             resize_strip_window
         ])
@@ -618,7 +681,11 @@ fn build_control_strip_item(config: &PinnedAppConfig) -> ControlStripItem {
                 .filter(|name| !name.trim().is_empty())
                 .map(ToString::to_string)
                 .unwrap_or_else(|| fallback_label(&desktop_path));
-            let icon = desktop.icon.as_deref().and_then(resolve_icon);
+            let icon = config
+                .icon
+                .as_deref()
+                .and_then(resolve_icon)
+                .or_else(|| desktop.icon.as_deref().and_then(resolve_icon));
             let validation_error = validate_desktop_file(&desktop);
             let match_info = build_match_info(config.r#match.clone(), desktop.startup_wm_class.clone());
 

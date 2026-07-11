@@ -151,6 +151,16 @@ export async function launchPinnedApp(appId: string): Promise<void> {
   }
 }
 
+export async function setAppPinned(desktopFile: string, pinned: boolean, wmClass?: string): Promise<void> {
+  if (!isTauri()) return;
+  await invoke('set_app_pinned', { desktopFile, pinned, wmClass: wmClass ?? null });
+}
+
+export async function resolveDesktopFile(wmClass: string): Promise<string> {
+  if (!isTauri()) throw new Error('Not running inside Tauri');
+  return await invoke<string>('resolve_desktop_file', { wmClass });
+}
+
 export async function focusAppWindows(appId: string): Promise<void> {
   if (!isTauri()) {
     console.info(`Control Strip: would focus app windows for ${appId}`);
@@ -348,7 +358,8 @@ function createTemporaryItems(runningWindows: RunningWindow[]): ControlStripItem
       label: getTemporaryItemLabel(firstWindow),
       isPinned: false,
       isOpen: true,
-      windows: windows.map(toControlStripWindow)
+      windows: windows.map(toControlStripWindow),
+      wmClass: getWindowGroupKey(firstWindow)
     };
   });
 }

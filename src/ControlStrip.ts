@@ -37,6 +37,7 @@ export type ControlStripItem = {
   label: string;
   icon?: string;
   desktopFile?: string;
+  wmClass?: string;
   isPinned?: boolean;
   isOpen: boolean;
   windows?: ControlStripWindow[];
@@ -838,6 +839,7 @@ function createPane(
     .filter(Boolean)
     .join(' ');
   pane.style.backgroundImage = `url("${getPaneAsset(item, isPressed)}")`;
+  pane.dataset.itemId = item.id;
   pane.setAttribute('role', 'img');
   pane.setAttribute('aria-label', item.label);
   pane.title = item.error ? `${item.label}: ${item.error}` : item.label;

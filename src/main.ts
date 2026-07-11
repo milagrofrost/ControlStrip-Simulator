@@ -7,6 +7,8 @@ import {
   launchPinnedApp,
   loadControlStripModel,
   resizeStripWindow,
+  resolveDesktopFile,
+  setAppPinned,
   startRunningWindowPolling
 } from './controlStripModel';
 
@@ -60,7 +62,78 @@ async function bootstrap(): Promise<void> {
     }, 0);
   });
 
+
+  let latestRunningWindows: Parameters<typeof applyRunningWindowsToItems>[1] = [];
+  let contextMenu: HTMLDivElement | null = null;
+
+  const closeContextMenu = (): void => {
+    contextMenu?.remove();
+    contextMenu = null;
+  };
+
+  const refreshItems = async (): Promise<void> => {
+    const refreshed = await loadControlStripModel();
+    items = applyRunningWindowsToItems(refreshed.items, latestRunningWindows);
+    strip.setItems(items);
+  };
+
+  strip.addEventListener('contextmenu', (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    const pane = target.closest<HTMLElement>('.control-strip__pane');
+    const item = items.find((candidate) => candidate.id === pane?.dataset.itemId);
+    if (!pane || !item) return;
+    event.preventDefault();
+    closeContextMenu();
+
+    const menu = document.createElement('div');
+    menu.style.position = 'fixed';
+    menu.style.left = `${event.clientX}px`;
+    menu.style.top = `${event.clientY}px`;
+    menu.style.zIndex = '10000';
+    menu.style.padding = '3px';
+    menu.style.border = '1px solid #000';
+    menu.style.background = '#fff';
+    menu.style.font = '12px sans-serif';
+    menu.style.boxShadow = '2px 2px 0 rgba(0,0,0,.45)';
+
+    const action = document.createElement('button');
+    action.type = 'button';
+    action.textContent = item.isPinned ? 'Unpin from Strip' : 'Pin to Strip';
+    action.style.display = 'block';
+    action.style.width = '100%';
+    action.style.border = '0';
+    action.style.background = 'transparent';
+    action.style.padding = '4px 10px';
+    action.style.textAlign = 'left';
+    action.addEventListener('click', async () => {
+      action.disabled = true;
+      try {
+        const desktopFile = item.isPinned
+          ? item.desktopFile
+          : await resolveDesktopFile(item.wmClass ?? '');
+        if (!desktopFile) throw new Error(`No desktop file is available for ${item.label}`);
+        await setAppPinned(desktopFile, !item.isPinned, item.wmClass);
+        await refreshItems();
+      } catch (error) {
+        console.error('Control Strip: failed to update pin state', error);
+      } finally {
+        closeContextMenu();
+      }
+    });
+    menu.append(action);
+    document.body.append(menu);
+    contextMenu = menu;
+  });
+
+  window.addEventListener('pointerdown', (event) => {
+    if (contextMenu && event.target instanceof Node && !contextMenu.contains(event.target)) {
+      closeContextMenu();
+    }
+  });
+
   const stopPolling = startRunningWindowPolling((runningWindows) => {
+    latestRunningWindows = runningWindows;
     const detectedItems = applyRunningWindowsToItems(items, runningWindows);
     items = keepStableItemOrder(items, detectedItems);
     strip.setItems(items);
