@@ -50,6 +50,7 @@
   background-repeat: no-repeat;
   background-position: 0 0;
   background-size: auto;
+  cursor: pointer;
 }
 
 .control-strip__pane.is-disabled {
@@ -58,6 +59,8 @@
 
 .control-strip__icon {
   position: absolute;
+  pointer-events: none;
+  user-select: none;
   left: 50%;
   top: 50%;
   display: grid;

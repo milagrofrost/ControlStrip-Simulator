@@ -886,8 +886,7 @@ function createPane(
   pane.dataset.itemId = item.id;
   pane.dataset.pressedPart = panePressedPart;
   pane.setAttribute('role', 'img');
-  pane.setAttribute('aria-label', item.label);
-  pane.title = item.error ? `${item.label}: ${item.error}` : item.label;
+  pane.setAttribute('aria-label', item.error ? `${item.label}: ${item.error}` : item.label);
 
   if (!item.disabled) {
     attachPaneHandlers(pane, item, panePressedPart);
