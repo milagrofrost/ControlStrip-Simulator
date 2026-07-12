@@ -435,9 +435,6 @@ fn show_window_menu(
     let parent_position = window
         .outer_position()
         .map_err(|error| format!("Failed to read Control Strip position: {error}"))?;
-    let parent_size = window
-        .outer_size()
-        .map_err(|error| format!("Failed to read Control Strip size: {error}"))?;
 
     let longest_title_chars = payload
         .windows
@@ -453,8 +450,10 @@ fn show_window_menu(
     let physical_height = (logical_height * scale).ceil().max(1.0) as u32;
 
     let mut x = parent_position.x + (anchor_left * scale).round() as i32;
-    let strip_height = (24.0 * scale).round() as i32;
-    let mut y = parent_position.y + parent_size.height as i32 - strip_height - physical_height as i32;
+    // The main native window is already shrink-wrapped to the Control Strip.
+    // Anchor the popup directly to its top edge with a 1 px overlap so there
+    // is no visible seam between the two windows.
+    let mut y = parent_position.y - physical_height as i32 + 1;
 
     if let Some(monitor) = window.current_monitor().map_err(|error| error.to_string())? {
         let monitor_position = monitor.position();
