@@ -18,6 +18,11 @@ text = text.replace(
     1,
 )
 text = text.replace(
+    "          right: anchorRect.right,\n          viewportHeight: anchorRect.viewportHeight",
+    "          right: anchorRect.right,\n          viewportHeight: anchorRect.viewportHeight,\n          screenLeft: anchorRect.screenLeft,\n          screenTop: anchorRect.screenTop",
+    1,
+)
+text = text.replace(
     "      const rect = pane.getBoundingClientRect();\n      const anchorRect = {\n        left: rect.left,\n        top: rect.top,\n        width: rect.width,",
     "      const rect = pane.getBoundingClientRect();\n      const screenOriginX = event.screenX - event.clientX;\n      const screenOriginY = event.screenY - event.clientY;\n      const anchorRect = {\n        left: rect.left,\n        top: rect.top,\n        width: rect.width,",
     1,
