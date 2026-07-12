@@ -412,6 +412,7 @@ export interface WindowMenuAnchor {
   screenLeft: number;
   screenTop: number;
   width: number;
+  debugJson: string;
 }
 
 export async function showWindowMenu(
@@ -428,7 +429,8 @@ export async function showWindowMenu(
     windows: item.windows ?? [],
     screenLeft: anchor.screenLeft,
     screenTop: anchor.screenTop,
-    anchorWidth: anchor.width
+    anchorWidth: anchor.width,
+    debugJson: anchor.debugJson
   });
 }
 

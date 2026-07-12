@@ -71,7 +71,7 @@ export type ScreenCornerOptions = {
 export type ControlStripOptions = {
   onLaunchPinnedApp?: (item: ControlStripItem) => void;
   onFocusAppWindows?: (item: ControlStripItem) => void;
-  onOpenWindowMenu?: (item: ControlStripItem, anchor: { screenLeft: number; screenTop: number; width: number }) => void;
+  onOpenWindowMenu?: (item: ControlStripItem, anchor: { screenLeft: number; screenTop: number; width: number; debugJson: string }) => void;
   onCloseWindowMenu?: () => void;
   onContentResize?: (size: { width: number; height: number }) => void;
   sizing?: ControlStripSizingOptions;
@@ -114,6 +114,7 @@ type OpenWindowMenu = {
     viewportHeight: number;
     screenLeft: number;
     screenTop: number;
+    debugJson: string;
   };
 };
 
@@ -683,7 +684,8 @@ export function createControlStrip(
         options.onOpenWindowMenu(item, {
           screenLeft: anchorRect.screenLeft,
           screenTop: anchorRect.screenTop,
-          width: anchorRect.width
+          width: anchorRect.width,
+          debugJson: anchorRect.debugJson
         });
         return;
       }
@@ -698,7 +700,8 @@ export function createControlStrip(
           right: anchorRect.right,
           viewportHeight: anchorRect.viewportHeight,
           screenLeft: anchorRect.screenLeft,
-          screenTop: anchorRect.screenTop
+          screenTop: anchorRect.screenTop,
+          debugJson: anchorRect.debugJson
         }
       };
       renderMenu();
@@ -726,7 +729,44 @@ export function createControlStrip(
         right: rect.right,
         viewportHeight: window.innerHeight,
         screenLeft: screenOriginX + rect.left,
-        screenTop: screenOriginY + rect.top
+        screenTop: screenOriginY + rect.top,
+        debugJson: JSON.stringify({
+          pointer: {
+            screenX: event.screenX,
+            screenY: event.screenY,
+            clientX: event.clientX,
+            clientY: event.clientY
+          },
+          paneRect: {
+            left: rect.left,
+            top: rect.top,
+            right: rect.right,
+            bottom: rect.bottom,
+            width: rect.width,
+            height: rect.height
+          },
+          calculated: {
+            screenOriginX,
+            screenOriginY,
+            screenLeft: screenOriginX + rect.left,
+            screenTop: screenOriginY + rect.top
+          },
+          window: {
+            innerWidth: window.innerWidth,
+            innerHeight: window.innerHeight,
+            outerWidth: window.outerWidth,
+            outerHeight: window.outerHeight,
+            screenX: window.screenX,
+            screenY: window.screenY,
+            devicePixelRatio: window.devicePixelRatio
+          },
+          screen: {
+            width: window.screen.width,
+            height: window.screen.height,
+            availWidth: window.screen.availWidth,
+            availHeight: window.screen.availHeight
+          }
+        })
       };
 
       activePanePress = {

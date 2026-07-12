@@ -414,6 +414,7 @@ fn show_window_menu(
     screen_left: f64,
     screen_top: f64,
     anchor_width: f64,
+    debug_json: String,
 ) -> Result<(), String> {
     if let Some(existing) = app.get_webview_window("window-menu") {
         existing.close().map_err(|error| format!("Failed to close existing window menu: {error}"))?;
@@ -432,6 +433,10 @@ fn show_window_menu(
     let scale = window
         .scale_factor()
         .map_err(|error| format!("Failed to read scale factor: {error}"))?;
+    let parent_position = window.outer_position()
+        .map_err(|error| format!("Failed to read Control Strip position: {error}"))?;
+    let parent_size = window.outer_size()
+        .map_err(|error| format!("Failed to read Control Strip size: {error}"))?;
 
     let longest_title_chars = payload
         .windows
@@ -448,17 +453,54 @@ fn show_window_menu(
 
     // screen_left/screen_top are absolute CSS screen coordinates captured
     // from the pointer event. Convert them once to native physical pixels.
-    let mut x = (screen_left * scale).round() as i32;
-    let mut y = (screen_top * scale).round() as i32 - physical_height as i32 + 1;
+    let raw_x = (screen_left * scale).round() as i32;
+    let raw_y = (screen_top * scale).round() as i32 - physical_height as i32 + 1;
+    let mut x = raw_x;
+    let mut y = raw_y;
+    let mut monitor_debug = String::from("none");
 
     if let Some(monitor) = window.current_monitor().map_err(|error| error.to_string())? {
         let monitor_position = monitor.position();
         let monitor_size = monitor.size();
         let max_x = monitor_position.x + monitor_size.width as i32 - physical_width as i32;
         let max_y = monitor_position.y + monitor_size.height as i32 - physical_height as i32;
+        monitor_debug = format!(
+            "position=({}, {}) size={}x{} max=({}, {})",
+            monitor_position.x,
+            monitor_position.y,
+            monitor_size.width,
+            monitor_size.height,
+            max_x,
+            max_y
+        );
         x = x.clamp(monitor_position.x, max_x.max(monitor_position.x));
         y = y.clamp(monitor_position.y, max_y.max(monitor_position.y));
     }
+
+    eprintln!("CONTROL_STRIP_POPUP_DEBUG BEGIN");
+    eprintln!("frontend={debug_json}");
+    eprintln!(
+        "native parent_position=({}, {}) parent_size={}x{} scale_factor={scale}",
+        parent_position.x,
+        parent_position.y,
+        parent_size.width,
+        parent_size.height
+    );
+    eprintln!(
+        "native received screen_left={screen_left} screen_top={screen_top} anchor_width={anchor_width}"
+    );
+    eprintln!(
+        "native popup logical={}x{} physical={}x{} raw_position=({}, {}) clamped_position=({}, {})",
+        logical_width,
+        logical_height,
+        physical_width,
+        physical_height,
+        raw_x,
+        raw_y,
+        x,
+        y
+    );
+    eprintln!("native monitor {monitor_debug}");
 
     let menu = WebviewWindowBuilder::new(
         &app,
@@ -480,8 +522,33 @@ fn show_window_menu(
         .map_err(|error| format!("Failed to size window menu: {error}"))?;
     menu.set_position(PhysicalPosition::new(x, y))
         .map_err(|error| format!("Failed to position window menu: {error}"))?;
+
+    match (menu.outer_position(), menu.outer_size()) {
+        (Ok(position), Ok(size)) => eprintln!(
+            "native before_show actual_position=({}, {}) actual_size={}x{}",
+            position.x,
+            position.y,
+            size.width,
+            size.height
+        ),
+        (position, size) => eprintln!("native before_show geometry_error position={position:?} size={size:?}"),
+    }
+
     menu.show().map_err(|error| format!("Failed to show window menu: {error}"))?;
     menu.set_focus().map_err(|error| format!("Failed to focus window menu: {error}"))?;
+    std::thread::sleep(std::time::Duration::from_millis(100));
+
+    match (menu.outer_position(), menu.outer_size()) {
+        (Ok(position), Ok(size)) => eprintln!(
+            "native after_show actual_position=({}, {}) actual_size={}x{}",
+            position.x,
+            position.y,
+            size.width,
+            size.height
+        ),
+        (position, size) => eprintln!("native after_show geometry_error position={position:?} size={size:?}"),
+    }
+    eprintln!("CONTROL_STRIP_POPUP_DEBUG END");
 
     Ok(())
 }
