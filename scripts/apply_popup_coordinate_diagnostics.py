@@ -70,9 +70,7 @@ new_anchor = '''      const anchorRect = {
             width: window.screen.width,
             height: window.screen.height,
             availWidth: window.screen.availWidth,
-            availHeight: window.screen.availHeight,
-            availLeft: window.screen.availLeft,
-            availTop: window.screen.availTop
+            availHeight: window.screen.availHeight
           }
         })
       };'''
