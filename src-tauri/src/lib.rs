@@ -514,41 +514,50 @@ fn show_window_menu(
     .skip_taskbar(true)
     .always_on_top(true)
     .inner_size(logical_width, logical_height)
+    // Give GTK/X11 the intended logical position at window creation, then
+    // reinforce it after the native window has actually been mapped.
+    .position(x as f64 / scale, y as f64 / scale)
     .visible(false)
     .build()
     .map_err(|error| format!("Failed to create window menu: {error}"))?;
 
-    menu.set_size(PhysicalSize::new(physical_width, physical_height))
-        .map_err(|error| format!("Failed to size window menu: {error}"))?;
-    menu.set_position(PhysicalPosition::new(x, y))
-        .map_err(|error| format!("Failed to position window menu: {error}"))?;
-
-    match (menu.outer_position(), menu.outer_size()) {
-        (Ok(position), Ok(size)) => eprintln!(
-            "native before_show actual_position=({}, {}) actual_size={}x{}",
-            position.x,
-            position.y,
-            size.width,
-            size.height
-        ),
-        (position, size) => eprintln!("native before_show geometry_error position={position:?} size={size:?}"),
-    }
-
+    // The Linux webview reports 0x0 geometry until GTK/X11 maps the window.
+    // Show it first, return control to the event loop, and then reinforce the
+    // requested physical geometry twice in case the window manager adjusts it.
     menu.show().map_err(|error| format!("Failed to show window menu: {error}"))?;
-    menu.set_focus().map_err(|error| format!("Failed to focus window menu: {error}"))?;
-    std::thread::sleep(std::time::Duration::from_millis(100));
 
-    match (menu.outer_position(), menu.outer_size()) {
-        (Ok(position), Ok(size)) => eprintln!(
-            "native after_show actual_position=({}, {}) actual_size={}x{}",
-            position.x,
-            position.y,
-            size.width,
-            size.height
-        ),
-        (position, size) => eprintln!("native after_show geometry_error position={position:?} size={size:?}"),
-    }
-    eprintln!("CONTROL_STRIP_POPUP_DEBUG END");
+    let positioned_menu = menu.clone();
+    std::thread::spawn(move || {
+        for delay_ms in [25_u64, 150_u64] {
+            std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+
+            if let Err(error) = positioned_menu.set_size(PhysicalSize::new(physical_width, physical_height)) {
+                eprintln!("Control Strip: failed to size mapped window menu: {error}");
+                return;
+            }
+            if let Err(error) = positioned_menu.set_position(PhysicalPosition::new(x, y)) {
+                eprintln!("Control Strip: failed to position mapped window menu: {error}");
+                return;
+            }
+
+            match (positioned_menu.outer_position(), positioned_menu.outer_size()) {
+                (Ok(position), Ok(size)) => eprintln!(
+                    "Control Strip: mapped window menu geometry position=({}, {}) size={}x{}",
+                    position.x,
+                    position.y,
+                    size.width,
+                    size.height
+                ),
+                (position, size) => eprintln!(
+                    "Control Strip: mapped window menu geometry unavailable position={position:?} size={size:?}"
+                ),
+            }
+        }
+
+        if let Err(error) = positioned_menu.set_focus() {
+            eprintln!("Control Strip: failed to focus mapped window menu: {error}");
+        }
+    });
 
     Ok(())
 }
