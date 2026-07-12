@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -417,11 +418,18 @@ fn resolve_desktop_file_for_wm_class(wm_class: &str) -> Result<PathBuf, String> 
         return Err("Window class is empty".to_string());
     }
 
-    let mut roots = Vec::new();
-    if let Some(home) = dirs::home_dir() {
-        roots.push(home.join(".local/share/applications"));
+    resolve_desktop_file_in_roots(wm_class, &application_dirs())
+}
+
+fn resolve_desktop_file_in_roots(wm_class: &str, roots: &[PathBuf]) -> Result<PathBuf, String> {
+    let hint = normalize_app_match_key(wm_class);
+    if hint.is_empty() {
+        return Err("Window class is empty".to_string());
     }
-    roots.push(PathBuf::from("/usr/share/applications"));
+
+    let mut best: Option<(PathBuf, u8)> = None;
+    let mut ambiguous = false;
+
     for root in roots {
         if !root.exists() { continue; }
         for entry in WalkDir::new(root).follow_links(false).into_iter().filter_map(Result::ok) {
@@ -429,14 +437,146 @@ fn resolve_desktop_file_for_wm_class(wm_class: &str) -> Result<PathBuf, String> 
             let Ok(contents) = fs::read_to_string(entry.path()) else { continue; };
             let desktop = parse_desktop_file(&contents);
             if validate_desktop_file(&desktop).is_some() { continue; }
-            let startup = desktop.startup_wm_class.as_deref().unwrap_or("").trim().to_ascii_lowercase();
-            let stem = entry.path().file_stem().and_then(|value| value.to_str()).unwrap_or("").to_ascii_lowercase();
-            if startup == hint || stem == hint || startup.contains(&hint) || stem.contains(&hint) {
-                return Ok(entry.path().to_path_buf());
+
+            let score = score_desktop_match(&hint, entry.path(), &desktop);
+            if score == 0 {
+                continue;
+            }
+
+            match best {
+                Some((_, best_score)) if score > best_score => {
+                    best = Some((entry.path().to_path_buf(), score));
+                    ambiguous = false;
+                }
+                Some((_, best_score)) if score == best_score => {
+                    ambiguous = true;
+                }
+                None => {
+                    best = Some((entry.path().to_path_buf(), score));
+                    ambiguous = false;
+                }
+                _ => {}
             }
         }
     }
+
+    if ambiguous {
+        return Err(format!("Multiple installed .desktop files matched WM_CLASS {wm_class}"));
+    }
+
+    if let Some((path, _)) = best {
+        return Ok(path);
+    }
+
     Err(format!("No installed .desktop file matched WM_CLASS {wm_class}"))
+}
+
+fn score_desktop_match(hint: &str, path: &Path, desktop: &ParsedDesktopFile) -> u8 {
+    let startup = desktop
+        .startup_wm_class
+        .as_deref()
+        .map(normalize_app_match_key)
+        .unwrap_or_default();
+    let stem = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .map(normalize_app_match_key)
+        .unwrap_or_default();
+    let exec = desktop
+        .exec
+        .as_deref()
+        .and_then(exec_basename)
+        .map(|value| normalize_app_match_key(&value))
+        .unwrap_or_default();
+
+    [
+        score_match_value(hint, &startup, 100, 70),
+        score_match_value(hint, &stem, 90, 60),
+        score_match_value(hint, &exec, 80, 50),
+    ]
+    .into_iter()
+    .max()
+    .unwrap_or(0)
+}
+
+fn score_match_value(hint: &str, candidate: &str, exact_score: u8, suffix_score: u8) -> u8 {
+    if hint.is_empty() || candidate.is_empty() {
+        return 0;
+    }
+
+    if candidate == hint {
+        return exact_score;
+    }
+
+    if candidate.ends_with(&format!("-{hint}")) {
+        return suffix_score;
+    }
+
+    0
+}
+
+fn normalize_app_match_key(value: &str) -> String {
+    let mut key = String::new();
+    let mut previous_was_separator = false;
+
+    for character in value.trim().to_ascii_lowercase().chars() {
+        if character.is_ascii_alphanumeric() {
+            key.push(character);
+            previous_was_separator = false;
+        } else if !previous_was_separator {
+            key.push('-');
+            previous_was_separator = true;
+        }
+    }
+
+    key.trim_matches('-').to_string()
+}
+
+fn exec_basename(exec: &str) -> Option<String> {
+    let exec = exec.trim();
+    if exec.is_empty() {
+        return None;
+    }
+
+    let command = if let Some(rest) = exec.strip_prefix('"') {
+        rest.split_once('"').map(|(command, _)| command).unwrap_or(rest)
+    } else {
+        exec.split_whitespace().next().unwrap_or(exec)
+    };
+
+    Path::new(command)
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .map(ToString::to_string)
+}
+
+fn application_dirs() -> Vec<PathBuf> {
+    application_dirs_from_env(
+        env::var_os("XDG_DATA_HOME"),
+        env::var_os("XDG_DATA_DIRS"),
+        dirs::home_dir(),
+    )
+}
+
+fn application_dirs_from_env(
+    xdg_data_home: Option<std::ffi::OsString>,
+    xdg_data_dirs: Option<std::ffi::OsString>,
+    home: Option<PathBuf>,
+) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+
+    if let Some(data_home) = xdg_data_home.filter(|value| !value.is_empty()) {
+        roots.push(PathBuf::from(data_home).join("applications"));
+    } else if let Some(home) = home {
+        roots.push(home.join(".local/share/applications"));
+    }
+
+    let data_dirs = xdg_data_dirs
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "/usr/local/share:/usr/share".into());
+    roots.extend(env::split_paths(&data_dirs).map(|path| path.join("applications")));
+
+    roots
 }
 
 fn resolve_transient_app_uncached(wm_class: &str) -> Result<TransientAppResolution, String> {
@@ -1163,10 +1303,15 @@ fn does_window_class_match(window: &RunningWindow, hint: &str) -> bool {
 }
 
 fn does_class_value_match(window_class: &str, hint: &str) -> bool {
-    let normalized_wm_class = window_class.trim().to_ascii_lowercase();
+    let normalized_wm_class = normalize_app_match_key(window_class);
+    let normalized_hint = normalize_app_match_key(hint);
+    if normalized_hint.is_empty() {
+        return false;
+    }
+
     normalized_wm_class == hint
-        || normalized_wm_class.ends_with(&format!(".{hint}"))
-        || normalized_wm_class.contains(hint)
+        || normalized_wm_class == normalized_hint
+        || normalized_wm_class.ends_with(&format!("-{normalized_hint}"))
 }
 
 fn desktop_file_stem(desktop_file: &str) -> Option<String> {
@@ -1420,6 +1565,30 @@ fn sanitize_id(path: &Path) -> String {
 mod tests {
     use super::*;
 
+    fn unique_test_dir(name: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("time")
+            .as_nanos();
+        let dir = env::temp_dir().join(format!("controlstrip-{name}-{nanos}"));
+        fs::create_dir_all(&dir).expect("create test dir");
+        dir
+    }
+
+    fn write_desktop(root: &Path, filename: &str, fields: &[(&str, &str)]) -> PathBuf {
+        fs::create_dir_all(root).expect("create applications dir");
+        let path = root.join(filename);
+        let mut contents = String::from("[Desktop Entry]\nType=Application\n");
+        for (key, value) in fields {
+            contents.push_str(key);
+            contents.push('=');
+            contents.push_str(value);
+            contents.push('\n');
+        }
+        fs::write(&path, contents).expect("write desktop file");
+        path
+    }
+
     fn running_window(wm_class: &str, wm_class_instance: &str, title: &str) -> RunningWindow {
         RunningWindow {
             id: "0x100".to_string(),
@@ -1539,6 +1708,113 @@ Comment=Line\nTwo
             "org-gnome-terminal"
         );
         assert_eq!(normalize_temporary_group_id(" !!! "), "unknown");
+    }
+
+    #[test]
+    fn class_matching_rejects_unbounded_substrings() {
+        assert!(does_class_value_match("org.gnome.Terminal", "terminal"));
+        assert!(does_class_value_match("Navigator.Firefox", "firefox"));
+        assert!(!does_class_value_match("Terminal", "term"));
+        assert!(!does_class_value_match("SomeFirefoxHelper", "firefox"));
+    }
+
+    #[test]
+    fn desktop_matching_prefers_ranked_exact_candidates() {
+        let root = unique_test_dir("ranked").join("applications");
+        let exact = write_desktop(
+            &root,
+            "vlc.desktop",
+            &[
+                ("Name", "VLC"),
+                ("Exec", "vlc %U"),
+                ("StartupWMClass", "vlc"),
+            ],
+        );
+        write_desktop(
+            &root,
+            "org.videolan.VLC.desktop",
+            &[
+                ("Name", "VLC alternate"),
+                ("Exec", "vlc %U"),
+                ("StartupWMClass", "org.videolan.VLC"),
+            ],
+        );
+
+        assert_eq!(
+            resolve_desktop_file_in_roots("vlc", &[root]).expect("desktop match"),
+            exact
+        );
+    }
+
+    #[test]
+    fn desktop_matching_rejects_false_positive_substrings() {
+        let root = unique_test_dir("false-positive").join("applications");
+        write_desktop(
+            &root,
+            "terminal.desktop",
+            &[
+                ("Name", "Terminal"),
+                ("Exec", "terminal"),
+                ("StartupWMClass", "Terminal"),
+            ],
+        );
+
+        assert!(resolve_desktop_file_in_roots("term", &[root]).is_err());
+    }
+
+    #[test]
+    fn desktop_matching_reports_ambiguous_best_candidates() {
+        let root = unique_test_dir("ambiguous").join("applications");
+        write_desktop(
+            &root,
+            "first.desktop",
+            &[("Name", "First"), ("Exec", "first"), ("StartupWMClass", "duplicate")],
+        );
+        write_desktop(
+            &root,
+            "second.desktop",
+            &[("Name", "Second"), ("Exec", "second"), ("StartupWMClass", "duplicate")],
+        );
+
+        let error = resolve_desktop_file_in_roots("duplicate", &[root])
+            .expect_err("ambiguous candidates should not resolve");
+        assert!(error.contains("Multiple installed .desktop files matched"));
+    }
+
+    #[test]
+    fn xdg_application_dirs_include_local_and_system_defaults() {
+        let dirs = application_dirs_from_env(
+            None,
+            None,
+            Some(PathBuf::from("/home/example")),
+        );
+
+        assert_eq!(
+            dirs,
+            vec![
+                PathBuf::from("/home/example/.local/share/applications"),
+                PathBuf::from("/usr/local/share/applications"),
+                PathBuf::from("/usr/share/applications"),
+            ]
+        );
+    }
+
+    #[test]
+    fn xdg_application_dirs_respect_environment_paths() {
+        let dirs = application_dirs_from_env(
+            Some("/tmp/data-home".into()),
+            Some("/opt/share:/custom/share".into()),
+            Some(PathBuf::from("/home/example")),
+        );
+
+        assert_eq!(
+            dirs,
+            vec![
+                PathBuf::from("/tmp/data-home/applications"),
+                PathBuf::from("/opt/share/applications"),
+                PathBuf::from("/custom/share/applications"),
+            ]
+        );
     }
 
     #[test]
