@@ -4,7 +4,6 @@ set -euo pipefail
 # Requires:
 #   sudo apt install xdotool x11-utils jq
 
-windows_json="[]"
 config_file="${XDG_DATA_HOME:-$HOME/.local/share}/control-strip/config.yaml"
 excluded_titles=()
 excluded_wm_classes=()
@@ -86,77 +85,99 @@ is_excluded_title() {
   return 1
 }
 
-# Do not use xdotool's --onlyvisible filter here. Minimized windows are still
-# running application windows and must remain available to the Control Strip.
-for id in $(xdotool search --name . 2>/dev/null || true); do
-  type_raw="$(xprop -id "$id" _NET_WM_WINDOW_TYPE 2>/dev/null || true)"
-  state_raw="$(xprop -id "$id" _NET_WM_STATE 2>/dev/null || true)"
-  name_raw="$(xprop -id "$id" _NET_WM_NAME 2>/dev/null || true)"
-  class_raw="$(xprop -id "$id" WM_CLASS 2>/dev/null || true)"
-  pid_raw="$(xprop -id "$id" _NET_WM_PID 2>/dev/null || true)"
+quoted_value() {
+  local value="$1"
 
-  # Keep only normal app windows.
-  echo "$type_raw" | grep -q "_NET_WM_WINDOW_TYPE_NORMAL" || continue
-
-  # Skip things that explicitly ask not to appear in taskbars/pagers.
-  echo "$state_raw" | grep -q "_NET_WM_STATE_SKIP_TASKBAR" && continue
-  echo "$state_raw" | grep -q "_NET_WM_STATE_SKIP_PAGER" && continue
-
-  # Extract title.
-  title="$(
-    echo "$name_raw" \
-      | sed -n 's/^_NET_WM_NAME(UTF8_STRING) = "\(.*\)"$/\1/p'
-  )"
-
-  # Fallback if _NET_WM_NAME is missing.
-  if [ -z "$title" ]; then
-    title="$(
-      xprop -id "$id" WM_NAME 2>/dev/null \
-        | sed -n 's/^WM_NAME(STRING) = "\(.*\)"$/\1/p'
-    )"
+  if [[ "$value" =~ ^[^=]+=\ \"(.*)\"$ ]]; then
+    printf '%s' "${BASH_REMATCH[1]}"
   fi
+}
 
-  # Shell components can opt out of Control Strip task tracking by exact title.
-  is_excluded_title "$title" && continue
+emit_windows() {
+  local id properties line
+  local has_normal skip_taskbar skip_pager title fallback_title wm_class_instance wm_class_name wm_class_key pid
 
-  # Extract WM_CLASS.
-  # Usually: WM_CLASS(STRING) = "Navigator", "firefox"
-  wm_class_instance="$(
-    echo "$class_raw" \
-      | sed -n 's/^WM_CLASS(STRING) = "\(.*\)", "\(.*\)"$/\1/p'
-  )"
+  # Do not use xdotool's --onlyvisible filter here. Minimized windows are still
+  # running application windows and must remain available to the Control Strip.
+  while IFS= read -r id; do
+    [ -n "$id" ] || continue
 
-  wm_class_name="$(
-    echo "$class_raw" \
-      | sed -n 's/^WM_CLASS(STRING) = "\(.*\)", "\(.*\)"$/\2/p'
-  )"
+    properties="$(
+      xprop -id "$id" \
+        _NET_WM_WINDOW_TYPE \
+        _NET_WM_STATE \
+        _NET_WM_NAME \
+        WM_NAME \
+        WM_CLASS \
+        _NET_WM_PID \
+        2>/dev/null || true
+    )"
 
-  wm_class_key="$wm_class_name"
-  [ -n "$wm_class_key" ] || wm_class_key="$wm_class_instance"
-  is_excluded_wm_class "$wm_class_key" && continue
+    has_normal=0
+    skip_taskbar=0
+    skip_pager=0
+    title=""
+    fallback_title=""
+    wm_class_instance=""
+    wm_class_name=""
+    pid=""
 
-  # Extract PID if present.
-  pid="$(
-    echo "$pid_raw" \
-      | sed -n 's/^_NET_WM_PID(CARDINAL) = \([0-9]*\)$/\1/p'
-  )"
+    while IFS= read -r line; do
+      case "$line" in
+        _NET_WM_WINDOW_TYPE*)
+          [[ "$line" == *"_NET_WM_WINDOW_TYPE_NORMAL"* ]] && has_normal=1
+          ;;
+        _NET_WM_STATE*)
+          [[ "$line" == *"_NET_WM_STATE_SKIP_TASKBAR"* ]] && skip_taskbar=1
+          [[ "$line" == *"_NET_WM_STATE_SKIP_PAGER"* ]] && skip_pager=1
+          ;;
+        "_NET_WM_NAME(UTF8_STRING) = "*)
+          title="$(quoted_value "$line")"
+          ;;
+        "WM_NAME(STRING) = "*)
+          fallback_title="$(quoted_value "$line")"
+          ;;
+        "WM_CLASS(STRING) = "*)
+          # Usually: WM_CLASS(STRING) = "Navigator", "firefox"
+          if [[ "$line" =~ ^WM_CLASS\(STRING\)\ =\ \"(.*)\",\ \"(.*)\"$ ]]; then
+            wm_class_instance="${BASH_REMATCH[1]}"
+            wm_class_name="${BASH_REMATCH[2]}"
+          fi
+          ;;
+        "_NET_WM_PID(CARDINAL) = "*)
+          pid="${line#*= }"
+          [[ "$pid" =~ ^[0-9]+$ ]] || pid=""
+          ;;
+      esac
+    done <<< "$properties"
 
-  windows_json="$(
-    jq \
+    [ "$has_normal" -eq 1 ] || continue
+    [ "$skip_taskbar" -eq 0 ] || continue
+    [ "$skip_pager" -eq 0 ] || continue
+
+    [ -n "$title" ] || title="$fallback_title"
+
+    # Shell components can opt out of Control Strip task tracking by exact title.
+    is_excluded_title "$title" && continue
+
+    wm_class_key="$wm_class_name"
+    [ -n "$wm_class_key" ] || wm_class_key="$wm_class_instance"
+    is_excluded_wm_class "$wm_class_key" && continue
+
+    jq -n \
       --arg id "$id" \
       --arg title "$title" \
       --arg wm_class_instance "$wm_class_instance" \
       --arg wm_class "$wm_class_name" \
       --arg pid "$pid" \
-      '. + [{
+      '{
         id: $id,
         title: $title,
         wm_class_instance: $wm_class_instance,
         wm_class: $wm_class,
         pid: ($pid | if . == "" then null else tonumber end)
-      }]' \
-      <<< "$windows_json"
-  )"
-done
+      }'
+  done < <(xdotool search --name . 2>/dev/null || true)
+}
 
-jq '.' <<< "$windows_json"
+emit_windows | jq -s '.'

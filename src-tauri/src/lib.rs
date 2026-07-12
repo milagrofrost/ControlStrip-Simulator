@@ -1,10 +1,11 @@
 use std::collections::HashMap;
+use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc,
+    Arc, Mutex, OnceLock,
 };
 use std::{thread, time::Duration};
 
@@ -26,6 +27,7 @@ const DEFAULT_SCREEN_CORNER_RADIUS: u32 = 18;
 const DEFAULT_SCREEN_CORNER_COLOR: &str = "#000000";
 const DEFAULT_SCREEN_CORNER_POSITION: &str = "bottom-left";
 const MAX_ICON_BYTES: u64 = 1_048_576;
+const MAX_RECURSIVE_ICON_ENTRIES: usize = 20_000;
 const DEFAULT_CONFIG: &str = r##"# ControlStrip Simulator config
 # Window placement is native Tauri window geometry in physical screen pixels.
 window:
@@ -57,7 +59,7 @@ screenCorner:
 pinned_apps: []
 "##;
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default)]
 struct ControlStripConfig {
     window: WindowPlacementConfig,
@@ -253,10 +255,72 @@ struct RunningWindow {
     pid: Option<u32>,
 }
 
+struct ConfigStore {
+    path: PathBuf,
+    config: Mutex<ControlStripConfig>,
+}
+
+impl ConfigStore {
+    fn load() -> Result<Self, String> {
+        let path = ensure_config_file()?;
+        let config = load_config(&path)?;
+        Ok(Self {
+            path,
+            config: Mutex::new(config),
+        })
+    }
+
+    fn load_or_default() -> Self {
+        match Self::load() {
+            Ok(store) => store,
+            Err(error) => {
+                eprintln!("Control Strip: could not load config cache: {error}");
+                Self {
+                    path: default_config_path(),
+                    config: Mutex::new(ControlStripConfig::default()),
+                }
+            }
+        }
+    }
+
+    fn current(&self) -> Result<ControlStripConfig, String> {
+        self.config
+            .lock()
+            .map_err(|_| "Config cache lock is poisoned".to_string())
+            .map(|config| config.clone())
+    }
+
+    fn reload(&self) -> Result<(), String> {
+        let config = load_config(&self.path)?;
+        let mut cached = self
+            .config
+            .lock()
+            .map_err(|_| "Config cache lock is poisoned".to_string())?;
+        *cached = config;
+        Ok(())
+    }
+
+    fn update<F>(&self, update: F) -> Result<(), String>
+    where
+        F: FnOnce(&mut ControlStripConfig) -> Result<(), String>,
+    {
+        let mut next_config = self.current()?;
+        update(&mut next_config)?;
+        write_config(&self.path, &next_config)?;
+        let mut cached = self
+            .config
+            .lock()
+            .map_err(|_| "Config cache lock is poisoned".to_string())?;
+        *cached = next_config;
+        Ok(())
+    }
+}
+
 #[tauri::command]
-fn get_control_strip_model() -> Result<ControlStripModel, String> {
-    let config_path = ensure_config_file()?;
-    let config = load_config(&config_path)?;
+fn get_control_strip_model(
+    config_store: tauri::State<'_, ConfigStore>,
+) -> Result<ControlStripModel, String> {
+    let config = config_store.current()?;
     let items: Vec<ControlStripItem> = config
         .pinned_apps
         .iter()
@@ -308,96 +372,349 @@ fn get_running_windows() -> RunningWindowsResult {
 }
 
 #[tauri::command]
-fn launch_pinned_app(app_id: String) -> Result<(), String> {
-    let config_path = ensure_config_file()?;
-    let config = load_config(&config_path)?;
+fn launch_pinned_app(
+    app_id: String,
+    config_store: tauri::State<'_, ConfigStore>,
+) -> Result<(), String> {
+    let config = config_store.current()?;
     let pinned_app = config
         .pinned_apps
         .iter()
         .find(|candidate| sanitize_id(&expand_home(&candidate.desktop_file)) == app_id)
         .ok_or_else(|| format!("No pinned app found for id {app_id}"))?;
     let desktop_path = validate_launch_desktop_file(pinned_app)?;
-    let desktop_file = desktop_path
-        .to_str()
-        .ok_or_else(|| format!("Desktop file path is not valid UTF-8: {}", desktop_path.display()))?;
+    let desktop_file = desktop_path.to_str().ok_or_else(|| {
+        format!(
+            "Desktop file path is not valid UTF-8: {}",
+            desktop_path.display()
+        )
+    })?;
 
     launch_desktop_file(desktop_file)
 }
 
 #[tauri::command]
-fn set_app_pinned(desktop_file: String, pinned: bool, wm_class: Option<String>) -> Result<(), String> {
-    let config_path = ensure_config_file()?;
-    let mut config = load_config(&config_path)?;
+fn set_app_pinned(
+    desktop_file: String,
+    pinned: bool,
+    wm_class: Option<String>,
+    config_store: tauri::State<'_, ConfigStore>,
+) -> Result<(), String> {
     let expanded = expand_home(&desktop_file);
     let canonical = fs::canonicalize(&expanded)
         .map_err(|error| format!("Failed to resolve {}: {error}", expanded.display()))?;
     if canonical.extension().and_then(|value| value.to_str()) != Some("desktop") {
-        return Err(format!("Pinned application must be a .desktop file: {}", canonical.display()));
+        return Err(format!(
+            "Pinned application must be a .desktop file: {}",
+            canonical.display()
+        ));
     }
     let canonical_string = canonical.display().to_string();
-    if pinned {
-        if !config.pinned_apps.iter().any(|item| expand_home(&item.desktop_file) == canonical) {
-            config.pinned_apps.push(PinnedAppConfig {
-                desktop_file: canonical_string,
-                icon: None,
-                r#match: wm_class.filter(|value| !value.trim().is_empty()).map(|value| WindowMatch {
-                    wm_class: Some(value),
-                    title_contains: None,
-                }),
-            });
+    config_store.update(|config| {
+        if pinned {
+            if !config
+                .pinned_apps
+                .iter()
+                .any(|item| expand_home(&item.desktop_file) == canonical)
+            {
+                config.pinned_apps.push(PinnedAppConfig {
+                    desktop_file: canonical_string,
+                    icon: None,
+                    r#match: wm_class
+                        .filter(|value| !value.trim().is_empty())
+                        .map(|value| WindowMatch {
+                            wm_class: Some(value),
+                            title_contains: None,
+                        }),
+                });
+            }
+        } else {
+            config
+                .pinned_apps
+                .retain(|item| expand_home(&item.desktop_file) != canonical);
         }
-    } else {
-        config.pinned_apps.retain(|item| expand_home(&item.desktop_file) != canonical);
-    }
-    let yaml = serde_yaml::to_string(&config)
-        .map_err(|error| format!("Failed to serialize {}: {error}", config_path.display()))?;
-    fs::write(&config_path, yaml)
-        .map_err(|error| format!("Failed to write {}: {error}", config_path.display()))
+        Ok(())
+    })
 }
 
 #[tauri::command]
-fn ignore_wm_class(wm_class: String) -> Result<(), String> {
+fn ignore_wm_class(
+    wm_class: String,
+    config_store: tauri::State<'_, ConfigStore>,
+) -> Result<(), String> {
     let normalized = wm_class.trim();
     if normalized.is_empty() {
         return Err("Window class is empty".to_string());
     }
-    let config_path = ensure_config_file()?;
-    let mut config = load_config(&config_path)?;
-    if !config.window_filters.exclude_wm_classes.iter().any(|value| value.eq_ignore_ascii_case(normalized)) {
-        config.window_filters.exclude_wm_classes.push(normalized.to_string());
-    }
-    let yaml = serde_yaml::to_string(&config)
-        .map_err(|error| format!("Failed to serialize {}: {error}", config_path.display()))?;
-    fs::write(&config_path, yaml)
-        .map_err(|error| format!("Failed to write {}: {error}", config_path.display()))
+    config_store.update(|config| {
+        if !config
+            .window_filters
+            .exclude_wm_classes
+            .iter()
+            .any(|value| value.eq_ignore_ascii_case(normalized))
+        {
+            config
+                .window_filters
+                .exclude_wm_classes
+                .push(normalized.to_string());
+        }
+        Ok(())
+    })
 }
 
 #[tauri::command]
 fn resolve_desktop_file(wm_class: String) -> Result<String, String> {
-    let hint = wm_class.trim().to_ascii_lowercase();
+    resolve_desktop_file_for_wm_class(&wm_class).map(|path| path.display().to_string())
+}
+
+#[tauri::command]
+fn reload_config(config_store: tauri::State<'_, ConfigStore>) -> Result<(), String> {
+    config_store.reload()
+}
+
+#[tauri::command]
+fn resolve_transient_app(
+    wm_class: String,
+    cache: tauri::State<'_, TransientAppResolutionCache>,
+) -> Result<TransientAppResolution, String> {
+    let identity = normalize_transient_identity(&wm_class);
+    if identity.is_empty() {
+        return Err("Window class is empty".to_string());
+    }
+
+    if let Some(cached) = cache
+        .entries
+        .lock()
+        .map_err(|_| "Transient app cache is poisoned".to_string())?
+        .get(&identity)
+        .cloned()
+    {
+        return Ok(cached);
+    }
+
+    let resolution = resolve_transient_app_uncached(&wm_class).unwrap_or_else(|error| {
+        eprintln!("Control Strip: no transient app resolved for {wm_class}: {error}");
+        TransientAppResolution::default()
+    });
+
+    cache
+        .entries
+        .lock()
+        .map_err(|_| "Transient app cache is poisoned".to_string())?
+        .insert(identity, resolution.clone());
+
+    Ok(resolution)
+}
+
+fn resolve_desktop_file_for_wm_class(wm_class: &str) -> Result<PathBuf, String> {
+    let hint = normalize_transient_identity(wm_class);
     if hint.is_empty() {
         return Err("Window class is empty".to_string());
     }
-    let mut roots = Vec::new();
-    if let Some(home) = dirs::home_dir() {
-        roots.push(home.join(".local/share/applications"));
+
+    resolve_desktop_file_in_roots(wm_class, &application_dirs())
+}
+
+fn resolve_desktop_file_in_roots(wm_class: &str, roots: &[PathBuf]) -> Result<PathBuf, String> {
+    let hint = normalize_app_match_key(wm_class);
+    if hint.is_empty() {
+        return Err("Window class is empty".to_string());
     }
-    roots.push(PathBuf::from("/usr/share/applications"));
+
+    let mut best: Option<(PathBuf, u8)> = None;
+    let mut ambiguous = false;
+
     for root in roots {
-        if !root.exists() { continue; }
-        for entry in WalkDir::new(root).follow_links(false).into_iter().filter_map(Result::ok) {
-            if !entry.file_type().is_file() || entry.path().extension().and_then(|value| value.to_str()) != Some("desktop") { continue; }
-            let Ok(contents) = fs::read_to_string(entry.path()) else { continue; };
+        if !root.exists() {
+            continue;
+        }
+        for entry in WalkDir::new(root)
+            .follow_links(false)
+            .into_iter()
+            .filter_map(Result::ok)
+        {
+            if !entry.file_type().is_file()
+                || entry.path().extension().and_then(|value| value.to_str()) != Some("desktop")
+            {
+                continue;
+            }
+            let Ok(contents) = fs::read_to_string(entry.path()) else {
+                continue;
+            };
             let desktop = parse_desktop_file(&contents);
-            if validate_desktop_file(&desktop).is_some() { continue; }
-            let startup = desktop.startup_wm_class.as_deref().unwrap_or("").trim().to_ascii_lowercase();
-            let stem = entry.path().file_stem().and_then(|value| value.to_str()).unwrap_or("").to_ascii_lowercase();
-            if startup == hint || stem == hint || startup.contains(&hint) || stem.contains(&hint) {
-                return Ok(entry.path().display().to_string());
+            if validate_desktop_file(&desktop).is_some() {
+                continue;
+            }
+
+            let score = score_desktop_match(&hint, entry.path(), &desktop);
+            if score == 0 {
+                continue;
+            }
+
+            match best {
+                Some((_, best_score)) if score > best_score => {
+                    best = Some((entry.path().to_path_buf(), score));
+                    ambiguous = false;
+                }
+                Some((_, best_score)) if score == best_score => {
+                    ambiguous = true;
+                }
+                None => {
+                    best = Some((entry.path().to_path_buf(), score));
+                    ambiguous = false;
+                }
+                _ => {}
             }
         }
     }
-    Err(format!("No installed .desktop file matched WM_CLASS {wm_class}"))
+
+    if ambiguous {
+        return Err(format!(
+            "Multiple installed .desktop files matched WM_CLASS {wm_class}"
+        ));
+    }
+
+    if let Some((path, _)) = best {
+        return Ok(path);
+    }
+
+    Err(format!(
+        "No installed .desktop file matched WM_CLASS {wm_class}"
+    ))
+}
+
+fn score_desktop_match(hint: &str, path: &Path, desktop: &ParsedDesktopFile) -> u8 {
+    let startup = desktop
+        .startup_wm_class
+        .as_deref()
+        .map(normalize_app_match_key)
+        .unwrap_or_default();
+    let stem = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .map(normalize_app_match_key)
+        .unwrap_or_default();
+    let exec = desktop
+        .exec
+        .as_deref()
+        .and_then(exec_basename)
+        .map(|value| normalize_app_match_key(&value))
+        .unwrap_or_default();
+
+    [
+        score_match_value(hint, &startup, 100, 70),
+        score_match_value(hint, &stem, 90, 60),
+        score_match_value(hint, &exec, 80, 50),
+    ]
+    .into_iter()
+    .max()
+    .unwrap_or(0)
+}
+
+fn score_match_value(hint: &str, candidate: &str, exact_score: u8, suffix_score: u8) -> u8 {
+    if hint.is_empty() || candidate.is_empty() {
+        return 0;
+    }
+
+    if candidate == hint {
+        return exact_score;
+    }
+
+    if candidate.ends_with(&format!("-{hint}")) {
+        return suffix_score;
+    }
+
+    0
+}
+
+fn normalize_app_match_key(value: &str) -> String {
+    let mut key = String::new();
+    let mut previous_was_separator = false;
+
+    for character in value.trim().to_ascii_lowercase().chars() {
+        if character.is_ascii_alphanumeric() {
+            key.push(character);
+            previous_was_separator = false;
+        } else if !previous_was_separator {
+            key.push('-');
+            previous_was_separator = true;
+        }
+    }
+
+    key.trim_matches('-').to_string()
+}
+
+fn exec_basename(exec: &str) -> Option<String> {
+    let exec = exec.trim();
+    if exec.is_empty() {
+        return None;
+    }
+
+    let command = if let Some(rest) = exec.strip_prefix('"') {
+        rest.split_once('"')
+            .map(|(command, _)| command)
+            .unwrap_or(rest)
+    } else {
+        exec.split_whitespace().next().unwrap_or(exec)
+    };
+
+    Path::new(command)
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .map(ToString::to_string)
+}
+
+fn application_dirs() -> Vec<PathBuf> {
+    application_dirs_from_env(
+        env::var_os("XDG_DATA_HOME"),
+        env::var_os("XDG_DATA_DIRS"),
+        dirs::home_dir(),
+    )
+}
+
+fn application_dirs_from_env(
+    xdg_data_home: Option<std::ffi::OsString>,
+    xdg_data_dirs: Option<std::ffi::OsString>,
+    home: Option<PathBuf>,
+) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+
+    if let Some(data_home) = xdg_data_home.filter(|value| !value.is_empty()) {
+        roots.push(PathBuf::from(data_home).join("applications"));
+    } else if let Some(home) = home {
+        roots.push(home.join(".local/share/applications"));
+    }
+
+    let data_dirs = xdg_data_dirs
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "/usr/local/share:/usr/share".into());
+    roots.extend(env::split_paths(&data_dirs).map(|path| path.join("applications")));
+
+    roots
+}
+
+fn resolve_transient_app_uncached(wm_class: &str) -> Result<TransientAppResolution, String> {
+    let desktop_path = resolve_desktop_file_for_wm_class(wm_class)?;
+    let contents = fs::read_to_string(&desktop_path)
+        .map_err(|error| format!("Failed to read {}: {error}", desktop_path.display()))?;
+    let desktop = parse_desktop_file(&contents);
+
+    if let Some(error) = validate_desktop_file(&desktop) {
+        return Err(format!("Cannot use {}: {error}", desktop_path.display()));
+    }
+
+    let label = desktop
+        .name
+        .as_deref()
+        .filter(|name| !name.trim().is_empty())
+        .map(ToString::to_string);
+    let icon = desktop.icon.as_deref().and_then(resolve_icon);
+
+    Ok(TransientAppResolution {
+        desktop_file: Some(desktop_path.display().to_string()),
+        label,
+        icon,
+    })
 }
 
 #[derive(Debug, Serialize)]
@@ -406,6 +723,27 @@ struct WindowMenuPayload {
     app_id: String,
     label: String,
     windows: Vec<ControlStripWindow>,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TransientAppResolution {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    desktop_file: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    icon: Option<String>,
+}
+
+#[derive(Default)]
+struct TransientAppResolutionCache {
+    entries: Mutex<HashMap<String, TransientAppResolution>>,
+}
+
+#[derive(Default)]
+struct IconResolutionCache {
+    entries: Mutex<HashMap<String, Option<String>>>,
 }
 
 #[tauri::command]
@@ -420,7 +758,9 @@ fn show_window_menu(
     anchor_width: f64,
 ) -> Result<(), String> {
     if let Some(existing) = app.get_webview_window("window-menu") {
-        existing.close().map_err(|error| format!("Failed to close existing window menu: {error}"))?;
+        existing
+            .close()
+            .map_err(|error| format!("Failed to close existing window menu: {error}"))?;
     }
 
     let payload = WindowMenuPayload {
@@ -457,7 +797,10 @@ fn show_window_menu(
     let mut x = raw_x;
     let mut y = raw_y;
 
-    if let Some(monitor) = window.current_monitor().map_err(|error| error.to_string())? {
+    if let Some(monitor) = window
+        .current_monitor()
+        .map_err(|error| error.to_string())?
+    {
         let monitor_position = monitor.position();
         let monitor_size = monitor.size();
         let max_x = monitor_position.x + monitor_size.width as i32 - physical_width as i32;
@@ -466,24 +809,20 @@ fn show_window_menu(
         y = y.clamp(monitor_position.y, max_y.max(monitor_position.y));
     }
 
-    let menu = WebviewWindowBuilder::new(
-        &app,
-        "window-menu",
-        WebviewUrl::App(url.into()),
-    )
-    .title("Window menu")
-    .decorations(false)
-    .transparent(true)
-    .resizable(false)
-    .skip_taskbar(true)
-    .always_on_top(true)
-    .inner_size(logical_width, logical_height)
-    // Give GTK/X11 the intended logical position at window creation, then
-    // reinforce it after the native window has actually been mapped.
-    .position(x as f64 / scale, y as f64 / scale)
-    .visible(false)
-    .build()
-    .map_err(|error| format!("Failed to create window menu: {error}"))?;
+    let menu = WebviewWindowBuilder::new(&app, "window-menu", WebviewUrl::App(url.into()))
+        .title("Window menu")
+        .decorations(false)
+        .transparent(true)
+        .resizable(false)
+        .skip_taskbar(true)
+        .always_on_top(true)
+        .inner_size(logical_width, logical_height)
+        // Give GTK/X11 the intended logical position at window creation, then
+        // reinforce it after the native window has actually been mapped.
+        .position(x as f64 / scale, y as f64 / scale)
+        .visible(false)
+        .build()
+        .map_err(|error| format!("Failed to create window menu: {error}"))?;
 
     // WebKit focus notifications are inconsistent for this small transparent
     // popup on Raspberry Pi OS. Arm dismissal only after the native window has
@@ -495,9 +834,7 @@ fn show_window_menu(
         tauri::WindowEvent::Focused(true) => {
             focus_dismiss_state.store(true, Ordering::Release);
         }
-        tauri::WindowEvent::Focused(false)
-            if focus_dismiss_state.swap(false, Ordering::AcqRel) =>
-        {
+        tauri::WindowEvent::Focused(false) if focus_dismiss_state.swap(false, Ordering::AcqRel) => {
             if let Err(error) = focus_dismiss_menu.close() {
                 eprintln!("Control Strip: failed to close unfocused window menu: {error}");
             }
@@ -508,14 +845,17 @@ fn show_window_menu(
     // GTK/X11 may ignore geometry set before a transparent popup is mapped.
     // Show it first, then reapply size and position twice after mapping; the
     // second pass handles window managers that adjust placement after creation.
-    menu.show().map_err(|error| format!("Failed to show window menu: {error}"))?;
+    menu.show()
+        .map_err(|error| format!("Failed to show window menu: {error}"))?;
 
     let positioned_menu = menu.clone();
     std::thread::spawn(move || {
         for delay_ms in [25_u64, 150_u64] {
             std::thread::sleep(std::time::Duration::from_millis(delay_ms));
 
-            if let Err(error) = positioned_menu.set_size(PhysicalSize::new(physical_width, physical_height)) {
+            if let Err(error) =
+                positioned_menu.set_size(PhysicalSize::new(physical_width, physical_height))
+            {
                 eprintln!("Control Strip: failed to size mapped window menu: {error}");
                 return;
             }
@@ -559,15 +899,20 @@ fn select_window_menu_item(app: tauri::AppHandle, window_id: String) -> Result<(
 #[tauri::command]
 fn hide_window_menu(app: tauri::AppHandle) -> Result<(), String> {
     if let Some(menu) = app.get_webview_window("window-menu") {
-        menu.close().map_err(|error| format!("Failed to close window menu: {error}"))?;
+        menu.close()
+            .map_err(|error| format!("Failed to close window menu: {error}"))?;
     }
     Ok(())
 }
 
 #[tauri::command]
-fn focus_app_windows(app_id: String) -> Result<(), String> {
+fn focus_app_windows(
+    app_id: String,
+    config_store: tauri::State<'_, ConfigStore>,
+) -> Result<(), String> {
     let windows = current_running_windows()?;
-    let window_ids = resolve_focus_window_ids(&app_id, &windows)?;
+    let config = config_store.current()?;
+    let window_ids = resolve_focus_window_ids(&app_id, &windows, &config)?;
 
     if window_ids.is_empty() {
         return Err(format!("No detected windows found for app id {app_id}"));
@@ -592,12 +937,13 @@ fn resize_strip_window(
     window: tauri::WebviewWindow,
     width: f64,
     height: f64,
+    config_store: tauri::State<'_, ConfigStore>,
 ) -> Result<(), String> {
     if !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 0.0 {
         return Err(format!("Invalid strip content size {width}x{height}"));
     }
 
-    let placement = load_window_placement();
+    let placement = config_store.current()?.window;
     let scale = window
         .scale_factor()
         .map_err(|error| format!("Failed to read scale factor: {error}"))?;
@@ -623,8 +969,17 @@ fn resize_strip_window(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .manage(ConfigStore::load_or_default())
+        .manage(TransientAppResolutionCache::default())
         .setup(|app| {
-            let placement = load_window_placement();
+            let placement = app
+                .state::<ConfigStore>()
+                .current()
+                .map(|config| config.window)
+                .unwrap_or_else(|error| {
+                    eprintln!("Control Strip: could not load window placement config: {error}");
+                    WindowPlacementConfig::default()
+                });
             if let Some(window) = app.get_webview_window("main") {
                 if let Err(error) = position_control_strip_window(&window, placement) {
                     eprintln!("Control Strip: could not position window: {error}");
@@ -646,7 +1001,9 @@ pub fn run() {
             launch_pinned_app,
             set_app_pinned,
             ignore_wm_class,
+            reload_config,
             resolve_desktop_file,
+            resolve_transient_app,
             focus_app_windows,
             show_window_menu,
             hide_window_menu,
@@ -655,16 +1012,6 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running ControlStrip Simulator");
-}
-
-fn load_window_placement() -> WindowPlacementConfig {
-    ensure_config_file()
-        .and_then(|config_path| load_config(&config_path))
-        .map(|config| config.window)
-        .unwrap_or_else(|error| {
-            eprintln!("Control Strip: could not load window placement config: {error}");
-            WindowPlacementConfig::default()
-        })
 }
 
 fn position_control_strip_window(
@@ -682,7 +1029,9 @@ fn place_window_bottom_left(
 ) -> tauri::Result<()> {
     window.set_size(PhysicalSize::new(width, height))?;
     let Some(monitor) = window.current_monitor()?.or(window.primary_monitor()?) else {
-        eprintln!("Control Strip: no current or primary monitor available; keeping default position");
+        eprintln!(
+            "Control Strip: no current or primary monitor available; keeping default position"
+        );
         return Ok(());
     };
     let monitor_position = monitor.position();
@@ -710,7 +1059,12 @@ fn current_running_windows() -> Result<Vec<RunningWindow>, String> {
     let output = Command::new("bash")
         .arg(&script_path)
         .output()
-        .map_err(|error| format!("Failed to run {} through bash: {error}", script_path.display()))?;
+        .map_err(|error| {
+            format!(
+                "Failed to run {} through bash: {error}",
+                script_path.display()
+            )
+        })?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -734,13 +1088,15 @@ fn current_running_windows() -> Result<Vec<RunningWindow>, String> {
     })
 }
 
-fn resolve_focus_window_ids(app_id: &str, windows: &[RunningWindow]) -> Result<Vec<String>, String> {
+fn resolve_focus_window_ids(
+    app_id: &str,
+    windows: &[RunningWindow],
+    config: &ControlStripConfig,
+) -> Result<Vec<String>, String> {
     if !is_valid_app_id(app_id) {
         return Err(format!("Invalid app id {app_id}"));
     }
 
-    let config_path = ensure_config_file()?;
-    let config = load_config(&config_path)?;
     let mut unmatched_indices = (0..windows.len()).collect::<Vec<_>>();
 
     for pinned_app in &config.pinned_apps {
@@ -766,7 +1122,9 @@ fn resolve_focus_window_ids(app_id: &str, windows: &[RunningWindow]) -> Result<V
         .ok_or_else(|| format!("No pinned or temporary app found for id {app_id}"))?;
     Ok(unmatched_indices
         .into_iter()
-        .filter(|index| normalize_temporary_group_id(window_group_key(&windows[*index])) == temporary_group_id)
+        .filter(|index| {
+            normalize_temporary_group_id(window_group_key(&windows[*index])) == temporary_group_id
+        })
         .map(|index| windows[index].id.clone())
         .collect())
 }
@@ -781,7 +1139,10 @@ fn focus_window(window_id: &str) -> Result<(), String> {
         Ok(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
             if stderr.is_empty() {
-                Err(format!("wmctrl -ia {window_id} failed with status {}", output.status))
+                Err(format!(
+                    "wmctrl -ia {window_id} failed with status {}",
+                    output.status
+                ))
             } else {
                 Err(format!("wmctrl -ia {window_id} failed: {stderr}"))
             }
@@ -804,11 +1165,21 @@ fn validate_launch_desktop_file(config: &PinnedAppConfig) -> Result<PathBuf, Str
         .map_err(|error| format!("Failed to resolve {}: {error}", desktop_path.display()))?;
 
     if !desktop_path.is_file() {
-        return Err(format!("Desktop file is not a file: {}", desktop_path.display()));
+        return Err(format!(
+            "Desktop file is not a file: {}",
+            desktop_path.display()
+        ));
     }
 
-    if desktop_path.extension().and_then(|extension| extension.to_str()) != Some("desktop") {
-        return Err(format!("Desktop file must end in .desktop: {}", desktop_path.display()));
+    if desktop_path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        != Some("desktop")
+    {
+        return Err(format!(
+            "Desktop file must end in .desktop: {}",
+            desktop_path.display()
+        ));
     }
 
     let contents = fs::read_to_string(&desktop_path)
@@ -859,9 +1230,10 @@ fn spawn_launcher(program: &str, args: &[&str]) -> Result<(), String> {
 }
 
 fn ensure_config_file() -> Result<PathBuf, String> {
-    let home = dirs::home_dir().ok_or_else(|| "Unable to determine home directory".to_string())?;
-    let config_dir = home.join(CONFIG_DIR);
-    let config_path = config_dir.join(CONFIG_FILE);
+    let config_path = default_config_path();
+    let config_dir = config_path
+        .parent()
+        .ok_or_else(|| format!("Config path has no parent: {}", config_path.display()))?;
 
     fs::create_dir_all(&config_dir)
         .map_err(|error| format!("Failed to create {}: {error}", config_dir.display()))?;
@@ -874,12 +1246,26 @@ fn ensure_config_file() -> Result<PathBuf, String> {
     Ok(config_path)
 }
 
+fn default_config_path() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(CONFIG_DIR)
+        .join(CONFIG_FILE)
+}
+
 fn load_config(config_path: &Path) -> Result<ControlStripConfig, String> {
     let contents = fs::read_to_string(config_path)
         .map_err(|error| format!("Failed to read {}: {error}", config_path.display()))?;
 
     serde_yaml::from_str(&contents)
         .map_err(|error| format!("Failed to parse {}: {error}", config_path.display()))
+}
+
+fn write_config(config_path: &Path, config: &ControlStripConfig) -> Result<(), String> {
+    let yaml = serde_yaml::to_string(config)
+        .map_err(|error| format!("Failed to serialize {}: {error}", config_path.display()))?;
+    fs::write(config_path, yaml)
+        .map_err(|error| format!("Failed to write {}: {error}", config_path.display()))
 }
 
 fn build_control_strip_item(config: &PinnedAppConfig) -> ControlStripItem {
@@ -902,7 +1288,8 @@ fn build_control_strip_item(config: &PinnedAppConfig) -> ControlStripItem {
                 .and_then(resolve_icon)
                 .or_else(|| desktop.icon.as_deref().and_then(resolve_icon));
             let validation_error = validate_desktop_file(&desktop);
-            let match_info = build_match_info(config.r#match.clone(), desktop.startup_wm_class.clone());
+            let match_info =
+                build_match_info(config.r#match.clone(), desktop.startup_wm_class.clone());
 
             if let Some(error) = validation_error {
                 eprintln!("Control Strip: disabled {}: {}", desktop_file, error);
@@ -990,7 +1377,9 @@ fn parse_desktop_file(contents: &str) -> ParsedDesktopFile {
         exec: values.remove("Exec"),
         startup_wm_class: values.remove("StartupWMClass"),
         r#type: values.remove("Type"),
-        hidden: values.remove("Hidden").and_then(|value| parse_desktop_bool(&value)),
+        hidden: values
+            .remove("Hidden")
+            .and_then(|value| parse_desktop_bool(&value)),
         no_display: values
             .remove("NoDisplay")
             .and_then(|value| parse_desktop_bool(&value)),
@@ -1053,11 +1442,12 @@ fn does_window_match_item(item: &ControlStripItem, window: &RunningWindow) -> bo
         .and_then(|match_info| match_info.title_contains.as_deref())
         .map(|value| value.trim().to_ascii_lowercase());
 
-    let wm_class_matches = if let Some(hint) = wm_class_hint.as_deref().filter(|hint| !hint.is_empty()) {
-        does_window_class_match(window, hint)
-    } else {
-        does_window_match_weak_fallback(item, window)
-    };
+    let wm_class_matches =
+        if let Some(hint) = wm_class_hint.as_deref().filter(|hint| !hint.is_empty()) {
+            does_window_class_match(window, hint)
+        } else {
+            does_window_match_weak_fallback(item, window)
+        };
     let title_matches = if let Some(hint) = title_hint.as_deref().filter(|hint| !hint.is_empty()) {
         window.title.to_ascii_lowercase().contains(hint)
     } else {
@@ -1068,12 +1458,15 @@ fn does_window_match_item(item: &ControlStripItem, window: &RunningWindow) -> bo
 }
 
 fn does_window_match_weak_fallback(item: &ControlStripItem, window: &RunningWindow) -> bool {
-    [desktop_file_stem(&item.desktop_file), Some(item.label.clone())]
-        .into_iter()
-        .flatten()
-        .map(|candidate| candidate.trim().to_ascii_lowercase())
-        .filter(|candidate| !candidate.is_empty())
-        .any(|candidate| does_window_class_match(window, &candidate))
+    [
+        desktop_file_stem(&item.desktop_file),
+        Some(item.label.clone()),
+    ]
+    .into_iter()
+    .flatten()
+    .map(|candidate| candidate.trim().to_ascii_lowercase())
+    .filter(|candidate| !candidate.is_empty())
+    .any(|candidate| does_window_class_match(window, &candidate))
 }
 
 fn does_window_class_match(window: &RunningWindow, hint: &str) -> bool {
@@ -1082,10 +1475,15 @@ fn does_window_class_match(window: &RunningWindow, hint: &str) -> bool {
 }
 
 fn does_class_value_match(window_class: &str, hint: &str) -> bool {
-    let normalized_wm_class = window_class.trim().to_ascii_lowercase();
+    let normalized_wm_class = normalize_app_match_key(window_class);
+    let normalized_hint = normalize_app_match_key(hint);
+    if normalized_hint.is_empty() {
+        return false;
+    }
+
     normalized_wm_class == hint
-        || normalized_wm_class.ends_with(&format!(".{hint}"))
-        || normalized_wm_class.contains(hint)
+        || normalized_wm_class == normalized_hint
+        || normalized_wm_class.ends_with(&format!("-{normalized_hint}"))
 }
 
 fn desktop_file_stem(desktop_file: &str) -> Option<String> {
@@ -1125,6 +1523,10 @@ fn normalize_temporary_group_id(wm_class: &str) -> String {
     }
 }
 
+fn normalize_transient_identity(value: &str) -> String {
+    value.trim().to_ascii_lowercase()
+}
+
 fn is_valid_app_id(app_id: &str) -> bool {
     !app_id.is_empty()
         && app_id
@@ -1137,7 +1539,10 @@ fn is_valid_window_id(window_id: &str) -> bool {
         return !hex.is_empty() && hex.chars().all(|character| character.is_ascii_hexdigit());
     }
 
-    !window_id.is_empty() && window_id.chars().all(|character| character.is_ascii_digit())
+    !window_id.is_empty()
+        && window_id
+            .chars()
+            .all(|character| character.is_ascii_digit())
 }
 
 fn resolve_icon(icon: &str) -> Option<String> {
@@ -1147,15 +1552,43 @@ fn resolve_icon(icon: &str) -> Option<String> {
         return None;
     }
 
+    resolve_icon_with_cache(icon, &icon_search_roots(), global_icon_resolution_cache())
+}
+
+fn global_icon_resolution_cache() -> &'static IconResolutionCache {
+    static CACHE: OnceLock<IconResolutionCache> = OnceLock::new();
+    CACHE.get_or_init(IconResolutionCache::default)
+}
+
+fn resolve_icon_with_cache(
+    icon: &str,
+    roots: &[PathBuf],
+    cache: &IconResolutionCache,
+) -> Option<String> {
+    let cache_key = icon.trim().to_string();
+    if cache_key.is_empty() {
+        return None;
+    }
+
+    if let Some(cached) = cache.entries.lock().ok()?.get(&cache_key).cloned() {
+        return cached;
+    }
+
+    let resolved = resolve_icon_uncached(&cache_key, roots);
+    if let Ok(mut entries) = cache.entries.lock() {
+        entries.insert(cache_key, resolved.clone());
+    }
+    resolved
+}
+
+fn resolve_icon_uncached(icon: &str, roots: &[PathBuf]) -> Option<String> {
     let icon_path = expand_home(icon);
     if icon_path.is_absolute() {
         return load_icon_data_url(&icon_path);
     }
 
-    for path in icon_search_roots() {
-        if let Some(icon_path) = find_icon_in_root(&path, icon) {
-            return load_icon_data_url(&icon_path);
-        }
+    if let Some(icon_path) = find_icon_in_roots(roots, icon) {
+        return load_icon_data_url(&icon_path);
     }
 
     eprintln!("Control Strip: unresolved icon {}", icon);
@@ -1166,7 +1599,10 @@ fn load_icon_data_url(path: &Path) -> Option<String> {
     let metadata = match fs::metadata(path) {
         Ok(metadata) => metadata,
         Err(error) => {
-            eprintln!("Control Strip: could not read icon metadata for {}: {error}", path.display());
+            eprintln!(
+                "Control Strip: could not read icon metadata for {}: {error}",
+                path.display()
+            );
             return None;
         }
     };
@@ -1210,45 +1646,102 @@ fn load_icon_data_url(path: &Path) -> Option<String> {
             BASE64_STANDARD.encode(bytes)
         )),
         Err(error) => {
-            eprintln!("Control Strip: could not read icon {}: {error}", path.display());
+            eprintln!(
+                "Control Strip: could not read icon {}: {error}",
+                path.display()
+            );
             None
         }
     }
 }
 
-fn find_icon_in_root(root: &Path, icon: &str) -> Option<PathBuf> {
-    if !root.exists() {
-        return None;
-    }
+fn find_icon_in_roots(roots: &[PathBuf], icon: &str) -> Option<PathBuf> {
+    let existing_roots = roots
+        .iter()
+        .filter(|root| root.exists())
+        .collect::<Vec<_>>();
 
-    for candidate in direct_icon_candidates(root, icon) {
-        if candidate.exists() {
+    for candidate in ranked_icon_candidates(&existing_roots, icon) {
+        if candidate.is_file() {
             return Some(candidate);
         }
     }
 
     let wanted_names = icon_file_names(icon);
-    WalkDir::new(root)
-        .follow_links(false)
-        .into_iter()
-        .filter_map(Result::ok)
-        .find_map(|entry| {
+    let mut matches = Vec::new();
+    for root in existing_roots {
+        let mut visited = 0usize;
+        for entry in WalkDir::new(root)
+            .follow_links(false)
+            .sort_by_file_name()
+            .into_iter()
+            .filter_map(Result::ok)
+        {
+            visited += 1;
+            if visited > MAX_RECURSIVE_ICON_ENTRIES {
+                eprintln!(
+                    "Control Strip: stopped broad icon search in {} after {} entries",
+                    root.display(),
+                    MAX_RECURSIVE_ICON_ENTRIES
+                );
+                break;
+            }
             if !entry.file_type().is_file() {
-                return None;
+                continue;
             }
 
             let file_name = entry.file_name().to_string_lossy();
-            wanted_names
+            if wanted_names
                 .iter()
                 .any(|wanted| wanted == file_name.as_ref())
-                .then(|| entry.path().to_path_buf())
-        })
+            {
+                matches.push(entry.path().to_path_buf());
+            }
+        }
+    }
+
+    matches.sort();
+    matches.into_iter().next()
+}
+
+fn ranked_icon_candidates(roots: &[&PathBuf], icon: &str) -> Vec<PathBuf> {
+    roots
+        .iter()
+        .flat_map(|root| direct_icon_candidates(root, icon))
+        .collect()
 }
 
 fn direct_icon_candidates(root: &Path, icon: &str) -> Vec<PathBuf> {
     icon_file_names(icon)
         .into_iter()
-        .map(|name| root.join(name))
+        .flat_map(|name| {
+            let themed_dirs = [
+                "hicolor/scalable/apps",
+                "hicolor/512x512/apps",
+                "hicolor/256x256/apps",
+                "hicolor/128x128/apps",
+                "hicolor/64x64/apps",
+                "hicolor/48x48/apps",
+                "hicolor/32x32/apps",
+                "hicolor/24x24/apps",
+                "hicolor/16x16/apps",
+                "scalable/apps",
+                "512x512/apps",
+                "256x256/apps",
+                "128x128/apps",
+                "64x64/apps",
+                "48x48/apps",
+                "32x32/apps",
+                "24x24/apps",
+                "16x16/apps",
+            ];
+
+            std::iter::once(root.join(&name)).chain(
+                themed_dirs
+                    .into_iter()
+                    .map(move |dir| root.join(dir).join(&name)),
+            )
+        })
         .collect()
 }
 
@@ -1265,15 +1758,45 @@ fn icon_file_names(icon: &str) -> Vec<String> {
 }
 
 fn icon_search_roots() -> Vec<PathBuf> {
+    icon_search_roots_from_env(
+        env::var_os("XDG_DATA_HOME"),
+        env::var_os("XDG_DATA_DIRS"),
+        dirs::home_dir(),
+    )
+}
+
+fn icon_search_roots_from_env(
+    xdg_data_home: Option<std::ffi::OsString>,
+    xdg_data_dirs: Option<std::ffi::OsString>,
+    home: Option<PathBuf>,
+) -> Vec<PathBuf> {
     let mut roots = Vec::new();
 
-    if let Some(home) = dirs::home_dir() {
+    if let Some(data_home) = xdg_data_home {
+        roots.push(PathBuf::from(data_home).join("icons"));
+    } else if let Some(home) = home {
         roots.push(home.join(".local/share/icons"));
     }
 
+    let data_dirs = xdg_data_dirs.unwrap_or_else(|| "/usr/local/share:/usr/share".into());
+    for data_dir in env::split_paths(&data_dirs) {
+        roots.push(data_dir.join("icons"));
+    }
+
+    roots.push(PathBuf::from("/usr/local/share/pixmaps"));
     roots.push(PathBuf::from("/usr/share/pixmaps"));
-    roots.push(PathBuf::from("/usr/share/icons"));
-    roots
+
+    dedupe_paths(roots)
+}
+
+fn dedupe_paths(paths: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut deduped = Vec::new();
+    for path in paths {
+        if !deduped.contains(&path) {
+            deduped.push(path);
+        }
+    }
+    deduped
 }
 
 fn parse_desktop_bool(value: &str) -> Option<bool> {
@@ -1328,5 +1851,510 @@ fn sanitize_id(path: &Path) -> String {
         "pinned-app".to_string()
     } else {
         id
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn unique_test_dir(name: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("time")
+            .as_nanos();
+        let dir = env::temp_dir().join(format!("controlstrip-{name}-{nanos}"));
+        fs::create_dir_all(&dir).expect("create test dir");
+        dir
+    }
+
+    fn write_desktop(root: &Path, filename: &str, fields: &[(&str, &str)]) -> PathBuf {
+        fs::create_dir_all(root).expect("create applications dir");
+        let path = root.join(filename);
+        let mut contents = String::from("[Desktop Entry]\nType=Application\n");
+        for (key, value) in fields {
+            contents.push_str(key);
+            contents.push('=');
+            contents.push_str(value);
+            contents.push('\n');
+        }
+        fs::write(&path, contents).expect("write desktop file");
+        path
+    }
+
+    fn write_icon(root: &Path, relative_path: &str, contents: &[u8]) -> PathBuf {
+        let path = root.join(relative_path);
+        fs::create_dir_all(path.parent().expect("icon parent")).expect("create icon dir");
+        fs::write(&path, contents).expect("write icon");
+        path
+    }
+
+    fn running_window(wm_class: &str, wm_class_instance: &str, title: &str) -> RunningWindow {
+        RunningWindow {
+            id: "0x100".to_string(),
+            title: title.to_string(),
+            wm_class_instance: wm_class_instance.to_string(),
+            wm_class: wm_class.to_string(),
+            pid: None,
+        }
+    }
+
+    fn item(match_info: Option<WindowMatch>) -> ControlStripItem {
+        ControlStripItem {
+            id: "firefox".to_string(),
+            label: "Firefox".to_string(),
+            icon: None,
+            desktop_file: "/usr/share/applications/firefox.desktop".to_string(),
+            is_pinned: true,
+            is_open: false,
+            windows: Vec::new(),
+            r#match: match_info,
+            disabled: None,
+            error: None,
+        }
+    }
+
+    fn config_store(path: PathBuf, config: ControlStripConfig) -> ConfigStore {
+        ConfigStore {
+            path,
+            config: Mutex::new(config),
+        }
+    }
+
+    fn sample_config_with_pinned_app(desktop_file: String) -> ControlStripConfig {
+        ControlStripConfig {
+            pinned_apps: vec![PinnedAppConfig {
+                desktop_file,
+                icon: None,
+                r#match: Some(WindowMatch {
+                    wm_class: Some("Example".to_string()),
+                    title_contains: None,
+                }),
+            }],
+            ..ControlStripConfig::default()
+        }
+    }
+
+    #[test]
+    fn parses_desktop_entry_fields_and_ignores_other_groups() {
+        let parsed = parse_desktop_file(
+            r#"
+[Other Group]
+Name=Wrong
+
+[Desktop Entry]
+Type=Application
+Name=Example\sApp
+Exec=example --flag
+Icon=example
+StartupWMClass=Example.App
+Hidden=false
+NoDisplay=true
+Comment=Line\nTwo
+"#,
+        );
+
+        assert_eq!(parsed.name.as_deref(), Some("Example App"));
+        assert_eq!(parsed.exec.as_deref(), Some("example --flag"));
+        assert_eq!(parsed.icon.as_deref(), Some("example"));
+        assert_eq!(parsed.startup_wm_class.as_deref(), Some("Example.App"));
+        assert_eq!(parsed.r#type.as_deref(), Some("Application"));
+        assert_eq!(parsed.hidden, Some(false));
+        assert_eq!(parsed.no_display, Some(true));
+        assert_eq!(parsed.comment.as_deref(), Some("Line\nTwo"));
+    }
+
+    #[test]
+    fn validates_desktop_entries_required_for_launch() {
+        let valid = ParsedDesktopFile {
+            name: Some("Example".to_string()),
+            exec: Some("example".to_string()),
+            r#type: Some("Application".to_string()),
+            ..ParsedDesktopFile::default()
+        };
+        assert_eq!(validate_desktop_file(&valid), None);
+
+        let missing_exec = ParsedDesktopFile {
+            exec: None,
+            ..valid.clone()
+        };
+        assert_eq!(
+            validate_desktop_file(&missing_exec).as_deref(),
+            Some("Missing required Exec")
+        );
+
+        let hidden = ParsedDesktopFile {
+            hidden: Some(true),
+            ..valid
+        };
+        assert_eq!(
+            validate_desktop_file(&hidden).as_deref(),
+            Some("Hidden=true")
+        );
+    }
+
+    #[test]
+    fn validates_focus_ids_without_shell_metacharacters() {
+        assert!(is_valid_window_id("0x03a00007"));
+        assert!(is_valid_window_id("12345"));
+        assert!(!is_valid_window_id("0x"));
+        assert!(!is_valid_window_id("0x12;wmctrl"));
+        assert!(!is_valid_window_id("12 34"));
+
+        assert!(is_valid_app_id("running:org-example-app"));
+        assert!(!is_valid_app_id(""));
+        assert!(!is_valid_app_id("running/app"));
+    }
+
+    #[test]
+    fn matches_configured_window_class_and_title() {
+        let pinned = item(Some(WindowMatch {
+            wm_class: Some("firefox".to_string()),
+            title_contains: Some("docs".to_string()),
+        }));
+
+        assert!(does_window_match_item(
+            &pinned,
+            &running_window("Navigator.Firefox", "", "Docs - Rust")
+        ));
+        assert!(!does_window_match_item(
+            &pinned,
+            &running_window("Navigator.Firefox", "", "Mail")
+        ));
+    }
+
+    #[test]
+    fn falls_back_to_desktop_stem_and_normalizes_temporary_ids() {
+        let pinned = item(None);
+        assert!(does_window_match_item(
+            &pinned,
+            &running_window("org.mozilla.firefox", "", "Browser")
+        ));
+        assert_eq!(
+            normalize_temporary_group_id(" org.gnome.Terminal "),
+            "org-gnome-terminal"
+        );
+        assert_eq!(normalize_temporary_group_id(" !!! "), "unknown");
+    }
+
+    #[test]
+    fn class_matching_rejects_unbounded_substrings() {
+        assert!(does_class_value_match("org.gnome.Terminal", "terminal"));
+        assert!(does_class_value_match("Navigator.Firefox", "firefox"));
+        assert!(!does_class_value_match("Terminal", "term"));
+        assert!(!does_class_value_match("SomeFirefoxHelper", "firefox"));
+    }
+
+    #[test]
+    fn config_store_loads_initial_config() {
+        let root = unique_test_dir("config-load");
+        let config_path = root.join("config.yaml");
+        let desktop_file = "/usr/share/applications/example.desktop".to_string();
+        let config = sample_config_with_pinned_app(desktop_file.clone());
+        write_config(&config_path, &config).expect("write config");
+
+        let loaded = load_config(&config_path).expect("load config");
+
+        assert_eq!(loaded.pinned_apps.len(), 1);
+        assert_eq!(loaded.pinned_apps[0].desktop_file, desktop_file);
+    }
+
+    #[test]
+    fn config_store_updates_cache_after_successful_write() {
+        let root = unique_test_dir("config-update");
+        let config_path = root.join("config.yaml");
+        let store = config_store(config_path.clone(), ControlStripConfig::default());
+
+        store
+            .update(|config| {
+                config
+                    .window_filters
+                    .exclude_wm_classes
+                    .push("Example".to_string());
+                Ok(())
+            })
+            .expect("update config");
+
+        assert_eq!(
+            store
+                .current()
+                .expect("cached config")
+                .window_filters
+                .exclude_wm_classes,
+            vec!["Example".to_string()]
+        );
+        assert_eq!(
+            load_config(&config_path)
+                .expect("persisted config")
+                .window_filters
+                .exclude_wm_classes,
+            vec!["Example".to_string()]
+        );
+    }
+
+    #[test]
+    fn config_store_preserves_cache_after_failed_write() {
+        let root = unique_test_dir("config-failed-write");
+        let unwritable_path = root.join("directory-instead-of-file");
+        fs::create_dir_all(&unwritable_path).expect("create directory");
+        let store = config_store(unwritable_path, ControlStripConfig::default());
+
+        let error = store
+            .update(|config| {
+                config
+                    .window_filters
+                    .exclude_wm_classes
+                    .push("Broken".to_string());
+                Ok(())
+            })
+            .expect_err("write should fail");
+
+        assert!(error.contains("Failed to write"));
+        assert!(store
+            .current()
+            .expect("cached config")
+            .window_filters
+            .exclude_wm_classes
+            .is_empty());
+    }
+
+    #[test]
+    fn config_store_explicit_reload_replaces_cache_from_file() {
+        let root = unique_test_dir("config-reload");
+        let config_path = root.join("config.yaml");
+        let store = config_store(config_path.clone(), ControlStripConfig::default());
+        let desktop_file = "/usr/share/applications/reloaded.desktop".to_string();
+        write_config(
+            &config_path,
+            &sample_config_with_pinned_app(desktop_file.clone()),
+        )
+        .expect("write replacement config");
+
+        store.reload().expect("reload config");
+
+        assert_eq!(
+            store.current().expect("cached config").pinned_apps[0].desktop_file,
+            desktop_file
+        );
+    }
+
+    #[test]
+    fn desktop_matching_prefers_ranked_exact_candidates() {
+        let root = unique_test_dir("ranked").join("applications");
+        let exact = write_desktop(
+            &root,
+            "vlc.desktop",
+            &[
+                ("Name", "VLC"),
+                ("Exec", "vlc %U"),
+                ("StartupWMClass", "vlc"),
+            ],
+        );
+        write_desktop(
+            &root,
+            "org.videolan.VLC.desktop",
+            &[
+                ("Name", "VLC alternate"),
+                ("Exec", "vlc %U"),
+                ("StartupWMClass", "org.videolan.VLC"),
+            ],
+        );
+
+        assert_eq!(
+            resolve_desktop_file_in_roots("vlc", &[root]).expect("desktop match"),
+            exact
+        );
+    }
+
+    #[test]
+    fn desktop_matching_rejects_false_positive_substrings() {
+        let root = unique_test_dir("false-positive").join("applications");
+        write_desktop(
+            &root,
+            "terminal.desktop",
+            &[
+                ("Name", "Terminal"),
+                ("Exec", "terminal"),
+                ("StartupWMClass", "Terminal"),
+            ],
+        );
+
+        assert!(resolve_desktop_file_in_roots("term", &[root]).is_err());
+    }
+
+    #[test]
+    fn desktop_matching_reports_ambiguous_best_candidates() {
+        let root = unique_test_dir("ambiguous").join("applications");
+        write_desktop(
+            &root,
+            "first.desktop",
+            &[
+                ("Name", "First"),
+                ("Exec", "first"),
+                ("StartupWMClass", "duplicate"),
+            ],
+        );
+        write_desktop(
+            &root,
+            "second.desktop",
+            &[
+                ("Name", "Second"),
+                ("Exec", "second"),
+                ("StartupWMClass", "duplicate"),
+            ],
+        );
+
+        let error = resolve_desktop_file_in_roots("duplicate", &[root])
+            .expect_err("ambiguous candidates should not resolve");
+        assert!(error.contains("Multiple installed .desktop files matched"));
+    }
+
+    #[test]
+    fn xdg_application_dirs_include_local_and_system_defaults() {
+        let dirs = application_dirs_from_env(None, None, Some(PathBuf::from("/home/example")));
+
+        assert_eq!(
+            dirs,
+            vec![
+                PathBuf::from("/home/example/.local/share/applications"),
+                PathBuf::from("/usr/local/share/applications"),
+                PathBuf::from("/usr/share/applications"),
+            ]
+        );
+    }
+
+    #[test]
+    fn xdg_application_dirs_respect_environment_paths() {
+        let dirs = application_dirs_from_env(
+            Some("/tmp/data-home".into()),
+            Some("/opt/share:/custom/share".into()),
+            Some(PathBuf::from("/home/example")),
+        );
+
+        assert_eq!(
+            dirs,
+            vec![
+                PathBuf::from("/tmp/data-home/applications"),
+                PathBuf::from("/opt/share/applications"),
+                PathBuf::from("/custom/share/applications"),
+            ]
+        );
+    }
+
+    #[test]
+    fn normalizes_transient_identity_for_cache_keys() {
+        assert_eq!(normalize_transient_identity("  VLC  "), "vlc");
+        assert_eq!(
+            normalize_transient_identity("Org.Example.App"),
+            "org.example.app"
+        );
+        assert_eq!(normalize_transient_identity("   "), "");
+    }
+
+    #[test]
+    fn transient_resolution_cache_can_store_failed_results() {
+        let cache = TransientAppResolutionCache::default();
+        let key = normalize_transient_identity("Missing.App");
+
+        cache
+            .entries
+            .lock()
+            .expect("cache lock")
+            .insert(key.clone(), TransientAppResolution::default());
+
+        let cached = cache
+            .entries
+            .lock()
+            .expect("cache lock")
+            .get(&key)
+            .cloned()
+            .expect("cached failed result");
+
+        assert!(cached.desktop_file.is_none());
+        assert!(cached.label.is_none());
+        assert!(cached.icon.is_none());
+    }
+
+    #[test]
+    fn icon_resolution_cache_reuses_successful_results() {
+        let root = unique_test_dir("icon-cache-hit");
+        let icon_path = write_icon(&root, "hicolor/48x48/apps/example.png", b"first");
+        let cache = IconResolutionCache::default();
+
+        let first = resolve_icon_with_cache("example", &[root.clone()], &cache).expect("icon");
+        fs::write(&icon_path, b"second").expect("replace icon");
+        let second = resolve_icon_with_cache("example", &[root], &cache).expect("cached icon");
+
+        assert_eq!(first, second);
+        assert!(first.contains(&BASE64_STANDARD.encode(b"first")));
+    }
+
+    #[test]
+    fn icon_resolution_cache_reuses_failed_results() {
+        let root = unique_test_dir("icon-cache-miss");
+        let cache = IconResolutionCache::default();
+
+        assert!(resolve_icon_with_cache("missing", &[root.clone()], &cache).is_none());
+        write_icon(&root, "missing.png", b"created later");
+
+        assert!(resolve_icon_with_cache("missing", &[root], &cache).is_none());
+    }
+
+    #[test]
+    fn icon_resolution_prefers_direct_candidates_before_recursive_matches() {
+        let root = unique_test_dir("icon-direct");
+        let direct = write_icon(&root, "example.png", b"direct");
+        write_icon(&root, "theme/apps/example.png", b"recursive");
+
+        let resolved = find_icon_in_roots(&[root], "example").expect("icon path");
+
+        assert_eq!(resolved, direct);
+    }
+
+    #[test]
+    fn icon_roots_respect_xdg_locations_and_system_defaults() {
+        let roots = icon_search_roots_from_env(
+            Some("/tmp/data-home".into()),
+            Some("/opt/share:/custom/share".into()),
+            Some(PathBuf::from("/home/example")),
+        );
+
+        assert_eq!(
+            roots,
+            vec![
+                PathBuf::from("/tmp/data-home/icons"),
+                PathBuf::from("/opt/share/icons"),
+                PathBuf::from("/custom/share/icons"),
+                PathBuf::from("/usr/local/share/pixmaps"),
+                PathBuf::from("/usr/share/pixmaps"),
+            ]
+        );
+    }
+
+    #[test]
+    fn icon_roots_include_usr_local_share_icons_by_default() {
+        let roots = icon_search_roots_from_env(None, None, Some(PathBuf::from("/home/example")));
+
+        assert!(roots.contains(&PathBuf::from("/home/example/.local/share/icons")));
+        assert!(roots.contains(&PathBuf::from("/usr/local/share/icons")));
+        assert!(roots.contains(&PathBuf::from("/usr/share/icons")));
+        assert!(roots.contains(&PathBuf::from("/usr/local/share/pixmaps")));
+        assert!(roots.contains(&PathBuf::from("/usr/share/pixmaps")));
+    }
+
+    #[test]
+    fn icon_candidate_ranking_is_deterministic() {
+        let root = PathBuf::from("/icons");
+        let candidates = direct_icon_candidates(&root, "example");
+
+        assert_eq!(candidates[0], PathBuf::from("/icons/example.png"));
+        assert_eq!(
+            candidates[1],
+            PathBuf::from("/icons/hicolor/scalable/apps/example.png")
+        );
+        assert_eq!(
+            candidates[2],
+            PathBuf::from("/icons/hicolor/512x512/apps/example.png")
+        );
     }
 }

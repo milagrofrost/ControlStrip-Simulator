@@ -1,0 +1,25 @@
+.control-strip-context-menu {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 10000;
+  visibility: hidden;
+  padding: 3px;
+  border: 1px solid #000;
+  background: #fff;
+  font: 12px sans-serif;
+  box-shadow: 2px 2px 0 rgba(0, 0, 0, .45);
+}
+
+.control-strip-context-menu__button {
+  display: block;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  padding: 4px 10px;
+  text-align: left;
+}
+
+.control-strip-context-menu__button--separated {
+  border-top: 1px solid #999;
+}
