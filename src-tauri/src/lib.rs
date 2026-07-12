@@ -14,7 +14,7 @@ use base64::{
     Engine as _,
 };
 use serde::{Deserialize, Serialize};
-use tauri::{Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindowBuilder};
+use tauri::{Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindowBuilder};
 use walkdir::WalkDir;
 
 const CONFIG_DIR: &str = ".local/share/control-strip";
@@ -26,6 +26,7 @@ const DEFAULT_SNAP_BACK_SECONDS: u64 = 10;
 const DEFAULT_SCREEN_CORNER_RADIUS: u32 = 18;
 const DEFAULT_SCREEN_CORNER_COLOR: &str = "#000000";
 const DEFAULT_SCREEN_CORNER_POSITION: &str = "bottom-left";
+const FLYOUT_CLOSED_EVENT: &str = "control-strip://flyout-closed";
 const MAX_ICON_BYTES: u64 = 1_048_576;
 const MAX_RECURSIVE_ICON_ENTRIES: usize = 20_000;
 const DEFAULT_CONFIG: &str = r##"# ControlStrip Simulator config
@@ -59,7 +60,7 @@ screenCorner:
 pinned_apps: []
 "##;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(default)]
 struct ControlStripConfig {
     window: WindowPlacementConfig,
@@ -94,18 +95,6 @@ struct ScreenCornerConfig {
     position: String,
     radius: u32,
     color: String,
-}
-
-impl Default for ControlStripConfig {
-    fn default() -> Self {
-        Self {
-            window: WindowPlacementConfig::default(),
-            strip: StripBehaviorConfig::default(),
-            screen_corner: ScreenCornerConfig::default(),
-            window_filters: WindowFiltersConfig::default(),
-            pinned_apps: Vec::new(),
-        }
-    }
 }
 
 impl Default for WindowPlacementConfig {
@@ -721,8 +710,28 @@ fn resolve_transient_app_uncached(wm_class: &str) -> Result<TransientAppResoluti
 #[serde(rename_all = "camelCase")]
 struct WindowMenuPayload {
     app_id: String,
+    session_id: String,
     label: String,
     windows: Vec<ControlStripWindow>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WindowMenuLifecycleEvent {
+    app_id: String,
+    session_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ShowWindowMenuRequest {
+    app_id: String,
+    session_id: String,
+    label: String,
+    windows: Vec<ControlStripWindow>,
+    screen_left: f64,
+    screen_top: f64,
+    anchor_width: f64,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -750,13 +759,18 @@ struct IconResolutionCache {
 fn show_window_menu(
     app: tauri::AppHandle,
     window: tauri::WebviewWindow,
-    app_id: String,
-    label: String,
-    windows: Vec<ControlStripWindow>,
-    screen_left: f64,
-    screen_top: f64,
-    anchor_width: f64,
+    request: ShowWindowMenuRequest,
 ) -> Result<(), String> {
+    let ShowWindowMenuRequest {
+        app_id,
+        session_id,
+        label,
+        windows,
+        screen_left,
+        screen_top,
+        anchor_width,
+    } = request;
+
     if let Some(existing) = app.get_webview_window("window-menu") {
         existing
             .close()
@@ -764,7 +778,8 @@ fn show_window_menu(
     }
 
     let payload = WindowMenuPayload {
-        app_id,
+        app_id: app_id.clone(),
+        session_id: session_id.clone(),
         label,
         windows,
     };
@@ -828,8 +843,12 @@ fn show_window_menu(
     // popup on Raspberry Pi OS. Arm dismissal only after the native window has
     // actually received focus, then close it on the next native focus loss.
     let focus_dismiss_armed = Arc::new(AtomicBool::new(false));
+    let close_event_emitted = Arc::new(AtomicBool::new(false));
     let focus_dismiss_state = Arc::clone(&focus_dismiss_armed);
+    let close_event_state = Arc::clone(&close_event_emitted);
     let focus_dismiss_menu = menu.clone();
+    let close_event_app = app.clone();
+    let close_event_payload = WindowMenuLifecycleEvent { app_id, session_id };
     menu.on_window_event(move |event| match event {
         tauri::WindowEvent::Focused(true) => {
             focus_dismiss_state.store(true, Ordering::Release);
@@ -837,6 +856,13 @@ fn show_window_menu(
         tauri::WindowEvent::Focused(false) if focus_dismiss_state.swap(false, Ordering::AcqRel) => {
             if let Err(error) = focus_dismiss_menu.close() {
                 eprintln!("Control Strip: failed to close unfocused window menu: {error}");
+            }
+        }
+        tauri::WindowEvent::Destroyed if !close_event_state.swap(true, Ordering::AcqRel) => {
+            if let Err(error) =
+                close_event_app.emit_to("main", FLYOUT_CLOSED_EVENT, close_event_payload.clone())
+            {
+                eprintln!("Control Strip: failed to emit window menu close event: {error}");
             }
         }
         _ => {}
@@ -1235,7 +1261,7 @@ fn ensure_config_file() -> Result<PathBuf, String> {
         .parent()
         .ok_or_else(|| format!("Config path has no parent: {}", config_path.display()))?;
 
-    fs::create_dir_all(&config_dir)
+    fs::create_dir_all(config_dir)
         .map_err(|error| format!("Failed to create {}: {error}", config_dir.display()))?;
 
     if !config_path.exists() {
@@ -2281,7 +2307,8 @@ Comment=Line\nTwo
         let icon_path = write_icon(&root, "hicolor/48x48/apps/example.png", b"first");
         let cache = IconResolutionCache::default();
 
-        let first = resolve_icon_with_cache("example", &[root.clone()], &cache).expect("icon");
+        let first =
+            resolve_icon_with_cache("example", std::slice::from_ref(&root), &cache).expect("icon");
         fs::write(&icon_path, b"second").expect("replace icon");
         let second = resolve_icon_with_cache("example", &[root], &cache).expect("cached icon");
 
@@ -2294,7 +2321,7 @@ Comment=Line\nTwo
         let root = unique_test_dir("icon-cache-miss");
         let cache = IconResolutionCache::default();
 
-        assert!(resolve_icon_with_cache("missing", &[root.clone()], &cache).is_none());
+        assert!(resolve_icon_with_cache("missing", std::slice::from_ref(&root), &cache).is_none());
         write_icon(&root, "missing.png", b"created later");
 
         assert!(resolve_icon_with_cache("missing", &[root], &cache).is_none());
