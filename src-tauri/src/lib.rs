@@ -316,7 +316,9 @@ impl ConfigStore {
 }
 
 #[tauri::command]
-fn get_control_strip_model(config_store: tauri::State<'_, ConfigStore>) -> Result<ControlStripModel, String> {
+fn get_control_strip_model(
+    config_store: tauri::State<'_, ConfigStore>,
+) -> Result<ControlStripModel, String> {
     let config = config_store.current()?;
     let items: Vec<ControlStripItem> = config
         .pinned_apps
@@ -369,7 +371,10 @@ fn get_running_windows() -> RunningWindowsResult {
 }
 
 #[tauri::command]
-fn launch_pinned_app(app_id: String, config_store: tauri::State<'_, ConfigStore>) -> Result<(), String> {
+fn launch_pinned_app(
+    app_id: String,
+    config_store: tauri::State<'_, ConfigStore>,
+) -> Result<(), String> {
     let config = config_store.current()?;
     let pinned_app = config
         .pinned_apps
@@ -377,9 +382,12 @@ fn launch_pinned_app(app_id: String, config_store: tauri::State<'_, ConfigStore>
         .find(|candidate| sanitize_id(&expand_home(&candidate.desktop_file)) == app_id)
         .ok_or_else(|| format!("No pinned app found for id {app_id}"))?;
     let desktop_path = validate_launch_desktop_file(pinned_app)?;
-    let desktop_file = desktop_path
-        .to_str()
-        .ok_or_else(|| format!("Desktop file path is not valid UTF-8: {}", desktop_path.display()))?;
+    let desktop_file = desktop_path.to_str().ok_or_else(|| {
+        format!(
+            "Desktop file path is not valid UTF-8: {}",
+            desktop_path.display()
+        )
+    })?;
 
     launch_desktop_file(desktop_file)
 }
@@ -395,37 +403,59 @@ fn set_app_pinned(
     let canonical = fs::canonicalize(&expanded)
         .map_err(|error| format!("Failed to resolve {}: {error}", expanded.display()))?;
     if canonical.extension().and_then(|value| value.to_str()) != Some("desktop") {
-        return Err(format!("Pinned application must be a .desktop file: {}", canonical.display()));
+        return Err(format!(
+            "Pinned application must be a .desktop file: {}",
+            canonical.display()
+        ));
     }
     let canonical_string = canonical.display().to_string();
     config_store.update(|config| {
         if pinned {
-            if !config.pinned_apps.iter().any(|item| expand_home(&item.desktop_file) == canonical) {
+            if !config
+                .pinned_apps
+                .iter()
+                .any(|item| expand_home(&item.desktop_file) == canonical)
+            {
                 config.pinned_apps.push(PinnedAppConfig {
                     desktop_file: canonical_string,
                     icon: None,
-                    r#match: wm_class.filter(|value| !value.trim().is_empty()).map(|value| WindowMatch {
-                        wm_class: Some(value),
-                        title_contains: None,
-                    }),
+                    r#match: wm_class
+                        .filter(|value| !value.trim().is_empty())
+                        .map(|value| WindowMatch {
+                            wm_class: Some(value),
+                            title_contains: None,
+                        }),
                 });
             }
         } else {
-            config.pinned_apps.retain(|item| expand_home(&item.desktop_file) != canonical);
+            config
+                .pinned_apps
+                .retain(|item| expand_home(&item.desktop_file) != canonical);
         }
         Ok(())
     })
 }
 
 #[tauri::command]
-fn ignore_wm_class(wm_class: String, config_store: tauri::State<'_, ConfigStore>) -> Result<(), String> {
+fn ignore_wm_class(
+    wm_class: String,
+    config_store: tauri::State<'_, ConfigStore>,
+) -> Result<(), String> {
     let normalized = wm_class.trim();
     if normalized.is_empty() {
         return Err("Window class is empty".to_string());
     }
     config_store.update(|config| {
-        if !config.window_filters.exclude_wm_classes.iter().any(|value| value.eq_ignore_ascii_case(normalized)) {
-            config.window_filters.exclude_wm_classes.push(normalized.to_string());
+        if !config
+            .window_filters
+            .exclude_wm_classes
+            .iter()
+            .any(|value| value.eq_ignore_ascii_case(normalized))
+        {
+            config
+                .window_filters
+                .exclude_wm_classes
+                .push(normalized.to_string());
         }
         Ok(())
     })
@@ -494,12 +524,26 @@ fn resolve_desktop_file_in_roots(wm_class: &str, roots: &[PathBuf]) -> Result<Pa
     let mut ambiguous = false;
 
     for root in roots {
-        if !root.exists() { continue; }
-        for entry in WalkDir::new(root).follow_links(false).into_iter().filter_map(Result::ok) {
-            if !entry.file_type().is_file() || entry.path().extension().and_then(|value| value.to_str()) != Some("desktop") { continue; }
-            let Ok(contents) = fs::read_to_string(entry.path()) else { continue; };
+        if !root.exists() {
+            continue;
+        }
+        for entry in WalkDir::new(root)
+            .follow_links(false)
+            .into_iter()
+            .filter_map(Result::ok)
+        {
+            if !entry.file_type().is_file()
+                || entry.path().extension().and_then(|value| value.to_str()) != Some("desktop")
+            {
+                continue;
+            }
+            let Ok(contents) = fs::read_to_string(entry.path()) else {
+                continue;
+            };
             let desktop = parse_desktop_file(&contents);
-            if validate_desktop_file(&desktop).is_some() { continue; }
+            if validate_desktop_file(&desktop).is_some() {
+                continue;
+            }
 
             let score = score_desktop_match(&hint, entry.path(), &desktop);
             if score == 0 {
@@ -524,14 +568,18 @@ fn resolve_desktop_file_in_roots(wm_class: &str, roots: &[PathBuf]) -> Result<Pa
     }
 
     if ambiguous {
-        return Err(format!("Multiple installed .desktop files matched WM_CLASS {wm_class}"));
+        return Err(format!(
+            "Multiple installed .desktop files matched WM_CLASS {wm_class}"
+        ));
     }
 
     if let Some((path, _)) = best {
         return Ok(path);
     }
 
-    Err(format!("No installed .desktop file matched WM_CLASS {wm_class}"))
+    Err(format!(
+        "No installed .desktop file matched WM_CLASS {wm_class}"
+    ))
 }
 
 fn score_desktop_match(hint: &str, path: &Path, desktop: &ParsedDesktopFile) -> u8 {
@@ -602,7 +650,9 @@ fn exec_basename(exec: &str) -> Option<String> {
     }
 
     let command = if let Some(rest) = exec.strip_prefix('"') {
-        rest.split_once('"').map(|(command, _)| command).unwrap_or(rest)
+        rest.split_once('"')
+            .map(|(command, _)| command)
+            .unwrap_or(rest)
     } else {
         exec.split_whitespace().next().unwrap_or(exec)
     };
@@ -702,7 +752,9 @@ fn show_window_menu(
     anchor_width: f64,
 ) -> Result<(), String> {
     if let Some(existing) = app.get_webview_window("window-menu") {
-        existing.close().map_err(|error| format!("Failed to close existing window menu: {error}"))?;
+        existing
+            .close()
+            .map_err(|error| format!("Failed to close existing window menu: {error}"))?;
     }
 
     let payload = WindowMenuPayload {
@@ -739,7 +791,10 @@ fn show_window_menu(
     let mut x = raw_x;
     let mut y = raw_y;
 
-    if let Some(monitor) = window.current_monitor().map_err(|error| error.to_string())? {
+    if let Some(monitor) = window
+        .current_monitor()
+        .map_err(|error| error.to_string())?
+    {
         let monitor_position = monitor.position();
         let monitor_size = monitor.size();
         let max_x = monitor_position.x + monitor_size.width as i32 - physical_width as i32;
@@ -748,24 +803,20 @@ fn show_window_menu(
         y = y.clamp(monitor_position.y, max_y.max(monitor_position.y));
     }
 
-    let menu = WebviewWindowBuilder::new(
-        &app,
-        "window-menu",
-        WebviewUrl::App(url.into()),
-    )
-    .title("Window menu")
-    .decorations(false)
-    .transparent(true)
-    .resizable(false)
-    .skip_taskbar(true)
-    .always_on_top(true)
-    .inner_size(logical_width, logical_height)
-    // Give GTK/X11 the intended logical position at window creation, then
-    // reinforce it after the native window has actually been mapped.
-    .position(x as f64 / scale, y as f64 / scale)
-    .visible(false)
-    .build()
-    .map_err(|error| format!("Failed to create window menu: {error}"))?;
+    let menu = WebviewWindowBuilder::new(&app, "window-menu", WebviewUrl::App(url.into()))
+        .title("Window menu")
+        .decorations(false)
+        .transparent(true)
+        .resizable(false)
+        .skip_taskbar(true)
+        .always_on_top(true)
+        .inner_size(logical_width, logical_height)
+        // Give GTK/X11 the intended logical position at window creation, then
+        // reinforce it after the native window has actually been mapped.
+        .position(x as f64 / scale, y as f64 / scale)
+        .visible(false)
+        .build()
+        .map_err(|error| format!("Failed to create window menu: {error}"))?;
 
     // WebKit focus notifications are inconsistent for this small transparent
     // popup on Raspberry Pi OS. Arm dismissal only after the native window has
@@ -777,9 +828,7 @@ fn show_window_menu(
         tauri::WindowEvent::Focused(true) => {
             focus_dismiss_state.store(true, Ordering::Release);
         }
-        tauri::WindowEvent::Focused(false)
-            if focus_dismiss_state.swap(false, Ordering::AcqRel) =>
-        {
+        tauri::WindowEvent::Focused(false) if focus_dismiss_state.swap(false, Ordering::AcqRel) => {
             if let Err(error) = focus_dismiss_menu.close() {
                 eprintln!("Control Strip: failed to close unfocused window menu: {error}");
             }
@@ -790,14 +839,17 @@ fn show_window_menu(
     // GTK/X11 may ignore geometry set before a transparent popup is mapped.
     // Show it first, then reapply size and position twice after mapping; the
     // second pass handles window managers that adjust placement after creation.
-    menu.show().map_err(|error| format!("Failed to show window menu: {error}"))?;
+    menu.show()
+        .map_err(|error| format!("Failed to show window menu: {error}"))?;
 
     let positioned_menu = menu.clone();
     std::thread::spawn(move || {
         for delay_ms in [25_u64, 150_u64] {
             std::thread::sleep(std::time::Duration::from_millis(delay_ms));
 
-            if let Err(error) = positioned_menu.set_size(PhysicalSize::new(physical_width, physical_height)) {
+            if let Err(error) =
+                positioned_menu.set_size(PhysicalSize::new(physical_width, physical_height))
+            {
                 eprintln!("Control Strip: failed to size mapped window menu: {error}");
                 return;
             }
@@ -841,13 +893,17 @@ fn select_window_menu_item(app: tauri::AppHandle, window_id: String) -> Result<(
 #[tauri::command]
 fn hide_window_menu(app: tauri::AppHandle) -> Result<(), String> {
     if let Some(menu) = app.get_webview_window("window-menu") {
-        menu.close().map_err(|error| format!("Failed to close window menu: {error}"))?;
+        menu.close()
+            .map_err(|error| format!("Failed to close window menu: {error}"))?;
     }
     Ok(())
 }
 
 #[tauri::command]
-fn focus_app_windows(app_id: String, config_store: tauri::State<'_, ConfigStore>) -> Result<(), String> {
+fn focus_app_windows(
+    app_id: String,
+    config_store: tauri::State<'_, ConfigStore>,
+) -> Result<(), String> {
     let windows = current_running_windows()?;
     let config = config_store.current()?;
     let window_ids = resolve_focus_window_ids(&app_id, &windows, &config)?;
@@ -967,7 +1023,9 @@ fn place_window_bottom_left(
 ) -> tauri::Result<()> {
     window.set_size(PhysicalSize::new(width, height))?;
     let Some(monitor) = window.current_monitor()?.or(window.primary_monitor()?) else {
-        eprintln!("Control Strip: no current or primary monitor available; keeping default position");
+        eprintln!(
+            "Control Strip: no current or primary monitor available; keeping default position"
+        );
         return Ok(());
     };
     let monitor_position = monitor.position();
@@ -995,7 +1053,12 @@ fn current_running_windows() -> Result<Vec<RunningWindow>, String> {
     let output = Command::new("bash")
         .arg(&script_path)
         .output()
-        .map_err(|error| format!("Failed to run {} through bash: {error}", script_path.display()))?;
+        .map_err(|error| {
+            format!(
+                "Failed to run {} through bash: {error}",
+                script_path.display()
+            )
+        })?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -1053,7 +1116,9 @@ fn resolve_focus_window_ids(
         .ok_or_else(|| format!("No pinned or temporary app found for id {app_id}"))?;
     Ok(unmatched_indices
         .into_iter()
-        .filter(|index| normalize_temporary_group_id(window_group_key(&windows[*index])) == temporary_group_id)
+        .filter(|index| {
+            normalize_temporary_group_id(window_group_key(&windows[*index])) == temporary_group_id
+        })
         .map(|index| windows[index].id.clone())
         .collect())
 }
@@ -1068,7 +1133,10 @@ fn focus_window(window_id: &str) -> Result<(), String> {
         Ok(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
             if stderr.is_empty() {
-                Err(format!("wmctrl -ia {window_id} failed with status {}", output.status))
+                Err(format!(
+                    "wmctrl -ia {window_id} failed with status {}",
+                    output.status
+                ))
             } else {
                 Err(format!("wmctrl -ia {window_id} failed: {stderr}"))
             }
@@ -1091,11 +1159,21 @@ fn validate_launch_desktop_file(config: &PinnedAppConfig) -> Result<PathBuf, Str
         .map_err(|error| format!("Failed to resolve {}: {error}", desktop_path.display()))?;
 
     if !desktop_path.is_file() {
-        return Err(format!("Desktop file is not a file: {}", desktop_path.display()));
+        return Err(format!(
+            "Desktop file is not a file: {}",
+            desktop_path.display()
+        ));
     }
 
-    if desktop_path.extension().and_then(|extension| extension.to_str()) != Some("desktop") {
-        return Err(format!("Desktop file must end in .desktop: {}", desktop_path.display()));
+    if desktop_path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        != Some("desktop")
+    {
+        return Err(format!(
+            "Desktop file must end in .desktop: {}",
+            desktop_path.display()
+        ));
     }
 
     let contents = fs::read_to_string(&desktop_path)
@@ -1204,7 +1282,8 @@ fn build_control_strip_item(config: &PinnedAppConfig) -> ControlStripItem {
                 .and_then(resolve_icon)
                 .or_else(|| desktop.icon.as_deref().and_then(resolve_icon));
             let validation_error = validate_desktop_file(&desktop);
-            let match_info = build_match_info(config.r#match.clone(), desktop.startup_wm_class.clone());
+            let match_info =
+                build_match_info(config.r#match.clone(), desktop.startup_wm_class.clone());
 
             if let Some(error) = validation_error {
                 eprintln!("Control Strip: disabled {}: {}", desktop_file, error);
@@ -1292,7 +1371,9 @@ fn parse_desktop_file(contents: &str) -> ParsedDesktopFile {
         exec: values.remove("Exec"),
         startup_wm_class: values.remove("StartupWMClass"),
         r#type: values.remove("Type"),
-        hidden: values.remove("Hidden").and_then(|value| parse_desktop_bool(&value)),
+        hidden: values
+            .remove("Hidden")
+            .and_then(|value| parse_desktop_bool(&value)),
         no_display: values
             .remove("NoDisplay")
             .and_then(|value| parse_desktop_bool(&value)),
@@ -1355,11 +1436,12 @@ fn does_window_match_item(item: &ControlStripItem, window: &RunningWindow) -> bo
         .and_then(|match_info| match_info.title_contains.as_deref())
         .map(|value| value.trim().to_ascii_lowercase());
 
-    let wm_class_matches = if let Some(hint) = wm_class_hint.as_deref().filter(|hint| !hint.is_empty()) {
-        does_window_class_match(window, hint)
-    } else {
-        does_window_match_weak_fallback(item, window)
-    };
+    let wm_class_matches =
+        if let Some(hint) = wm_class_hint.as_deref().filter(|hint| !hint.is_empty()) {
+            does_window_class_match(window, hint)
+        } else {
+            does_window_match_weak_fallback(item, window)
+        };
     let title_matches = if let Some(hint) = title_hint.as_deref().filter(|hint| !hint.is_empty()) {
         window.title.to_ascii_lowercase().contains(hint)
     } else {
@@ -1370,12 +1452,15 @@ fn does_window_match_item(item: &ControlStripItem, window: &RunningWindow) -> bo
 }
 
 fn does_window_match_weak_fallback(item: &ControlStripItem, window: &RunningWindow) -> bool {
-    [desktop_file_stem(&item.desktop_file), Some(item.label.clone())]
-        .into_iter()
-        .flatten()
-        .map(|candidate| candidate.trim().to_ascii_lowercase())
-        .filter(|candidate| !candidate.is_empty())
-        .any(|candidate| does_window_class_match(window, &candidate))
+    [
+        desktop_file_stem(&item.desktop_file),
+        Some(item.label.clone()),
+    ]
+    .into_iter()
+    .flatten()
+    .map(|candidate| candidate.trim().to_ascii_lowercase())
+    .filter(|candidate| !candidate.is_empty())
+    .any(|candidate| does_window_class_match(window, &candidate))
 }
 
 fn does_window_class_match(window: &RunningWindow, hint: &str) -> bool {
@@ -1448,7 +1533,10 @@ fn is_valid_window_id(window_id: &str) -> bool {
         return !hex.is_empty() && hex.chars().all(|character| character.is_ascii_hexdigit());
     }
 
-    !window_id.is_empty() && window_id.chars().all(|character| character.is_ascii_digit())
+    !window_id.is_empty()
+        && window_id
+            .chars()
+            .all(|character| character.is_ascii_digit())
 }
 
 fn resolve_icon(icon: &str) -> Option<String> {
@@ -1477,7 +1565,10 @@ fn load_icon_data_url(path: &Path) -> Option<String> {
     let metadata = match fs::metadata(path) {
         Ok(metadata) => metadata,
         Err(error) => {
-            eprintln!("Control Strip: could not read icon metadata for {}: {error}", path.display());
+            eprintln!(
+                "Control Strip: could not read icon metadata for {}: {error}",
+                path.display()
+            );
             return None;
         }
     };
@@ -1521,7 +1612,10 @@ fn load_icon_data_url(path: &Path) -> Option<String> {
             BASE64_STANDARD.encode(bytes)
         )),
         Err(error) => {
-            eprintln!("Control Strip: could not read icon {}: {error}", path.display());
+            eprintln!(
+                "Control Strip: could not read icon {}: {error}",
+                path.display()
+            );
             None
         }
     }
@@ -1759,13 +1853,19 @@ Comment=Line\nTwo
             exec: None,
             ..valid.clone()
         };
-        assert_eq!(validate_desktop_file(&missing_exec).as_deref(), Some("Missing required Exec"));
+        assert_eq!(
+            validate_desktop_file(&missing_exec).as_deref(),
+            Some("Missing required Exec")
+        );
 
         let hidden = ParsedDesktopFile {
             hidden: Some(true),
             ..valid
         };
-        assert_eq!(validate_desktop_file(&hidden).as_deref(), Some("Hidden=true"));
+        assert_eq!(
+            validate_desktop_file(&hidden).as_deref(),
+            Some("Hidden=true")
+        );
     }
 
     #[test]
@@ -1842,13 +1942,20 @@ Comment=Line\nTwo
 
         store
             .update(|config| {
-                config.window_filters.exclude_wm_classes.push("Example".to_string());
+                config
+                    .window_filters
+                    .exclude_wm_classes
+                    .push("Example".to_string());
                 Ok(())
             })
             .expect("update config");
 
         assert_eq!(
-            store.current().expect("cached config").window_filters.exclude_wm_classes,
+            store
+                .current()
+                .expect("cached config")
+                .window_filters
+                .exclude_wm_classes,
             vec!["Example".to_string()]
         );
         assert_eq!(
@@ -1869,7 +1976,10 @@ Comment=Line\nTwo
 
         let error = store
             .update(|config| {
-                config.window_filters.exclude_wm_classes.push("Broken".to_string());
+                config
+                    .window_filters
+                    .exclude_wm_classes
+                    .push("Broken".to_string());
                 Ok(())
             })
             .expect_err("write should fail");
@@ -1953,12 +2063,20 @@ Comment=Line\nTwo
         write_desktop(
             &root,
             "first.desktop",
-            &[("Name", "First"), ("Exec", "first"), ("StartupWMClass", "duplicate")],
+            &[
+                ("Name", "First"),
+                ("Exec", "first"),
+                ("StartupWMClass", "duplicate"),
+            ],
         );
         write_desktop(
             &root,
             "second.desktop",
-            &[("Name", "Second"), ("Exec", "second"), ("StartupWMClass", "duplicate")],
+            &[
+                ("Name", "Second"),
+                ("Exec", "second"),
+                ("StartupWMClass", "duplicate"),
+            ],
         );
 
         let error = resolve_desktop_file_in_roots("duplicate", &[root])
@@ -1968,11 +2086,7 @@ Comment=Line\nTwo
 
     #[test]
     fn xdg_application_dirs_include_local_and_system_defaults() {
-        let dirs = application_dirs_from_env(
-            None,
-            None,
-            Some(PathBuf::from("/home/example")),
-        );
+        let dirs = application_dirs_from_env(None, None, Some(PathBuf::from("/home/example")));
 
         assert_eq!(
             dirs,
