@@ -1,3 +1,6 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
 rm -rf dist
 rm -rf src-tauri/target/release/bundle
 npm run build
