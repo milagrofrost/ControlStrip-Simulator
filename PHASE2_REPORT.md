@@ -4,7 +4,7 @@
 
 - Starting commit SHA: `b9cd677c7562135e12d8631925336ea9d086df4f`
 - Integration branch: `codex/phase-2-beta`
-- Final integration commit: `9dcc96cd6ee2eee7af6609a1332f1627fdf50c85`
+- Final phase checkpoint commit before this report: `9dcc96cd6ee2eee7af6609a1332f1627fdf50c85`
 - Skipped phases: none
 - Deferred work: issue #19 was not started
 - Recommended first Pi checkpoint to test: `phase2/02-polling-performance`, then continue through `phase2/06-icon-cache`
