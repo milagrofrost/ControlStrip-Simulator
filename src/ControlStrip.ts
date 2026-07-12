@@ -139,6 +139,10 @@ const initialVisibleStart = 0;
 const minVisibleCount = 1; // A zero-pane strip leaves the scroll controls acting on an invisible window.
 const defaultPaneWidth = 27;
 const longPressDelayMs = 500;
+const clickFeedbackDurationMs = 500;
+const clickFeedbackFirstReleaseMs = 120;
+const clickFeedbackSecondPressMs = 210;
+const clickFeedbackSecondReleaseMs = 330;
 const defaultSnapBackDelayMs = 10000;
 
 type ResizeState = {
@@ -167,6 +171,9 @@ export function createControlStrip(
   let openWindowMenu: OpenWindowMenu | null = null;
   let snapBackTimer: number | null = null;
   let contentResizeFrame: number | null = null;
+  const paneActivationLocks = new Set<string>();
+  const clickFeedbackPressedItems = new Set<string>();
+  const clickFeedbackTimers = new Map<string, number[]>();
   const eventController = new AbortController();
 
   const strip = document.createElement('section') as ControlStripElement;
@@ -222,8 +229,9 @@ export function createControlStrip(
         const itemId = part.slice('pane:'.length);
         const item = items.find((candidate) => candidate.id === itemId);
         if (!item) continue;
-        element.classList.toggle('is-pressed', pressedPart === part);
-        element.style.backgroundImage = `url("${getPaneAsset(item, pressedPart === part)}")`;
+        const isPressed = pressedPart === part || clickFeedbackPressedItems.has(itemId);
+        element.classList.toggle('is-pressed', isPressed);
+        element.style.backgroundImage = `url("${getPaneAsset(item, isPressed)}")`;
       }
     }
   };
@@ -239,6 +247,50 @@ export function createControlStrip(
 
   const clearPressedPart = (): void => {
     setPressedPart(null);
+  };
+
+  const clearClickFeedback = (itemId: string): void => {
+    for (const timer of clickFeedbackTimers.get(itemId) ?? []) {
+      window.clearTimeout(timer);
+    }
+    clickFeedbackTimers.delete(itemId);
+    clickFeedbackPressedItems.delete(itemId);
+    paneActivationLocks.delete(itemId);
+    updatePressedVisuals();
+  };
+
+  const startClickFeedback = (item: ControlStripItem): boolean => {
+    if (paneActivationLocks.has(item.id)) {
+      return false;
+    }
+
+    paneActivationLocks.add(item.id);
+    clickFeedbackPressedItems.add(item.id);
+    updatePressedVisuals();
+
+    const timers = [
+      window.setTimeout(() => {
+        clickFeedbackPressedItems.delete(item.id);
+        updatePressedVisuals();
+      }, clickFeedbackFirstReleaseMs),
+      window.setTimeout(() => {
+        clickFeedbackPressedItems.add(item.id);
+        updatePressedVisuals();
+      }, clickFeedbackSecondPressMs),
+      window.setTimeout(() => {
+        clickFeedbackPressedItems.delete(item.id);
+        updatePressedVisuals();
+      }, clickFeedbackSecondReleaseMs),
+      window.setTimeout(() => {
+        clickFeedbackTimers.delete(item.id);
+        clickFeedbackPressedItems.delete(item.id);
+        paneActivationLocks.delete(item.id);
+        updatePressedVisuals();
+      }, clickFeedbackDurationMs)
+    ];
+
+    clickFeedbackTimers.set(item.id, timers);
+    return true;
   };
 
   const closeWindowMenu = (): void => {
@@ -410,7 +462,7 @@ export function createControlStrip(
       const itemId = activePressedPart.slice('pane:'.length);
       const item = items.find((candidate) => candidate.id === itemId);
 
-      if (item) {
+      if (item && startClickFeedback(item)) {
         activatePane(item, options);
       }
     }
@@ -434,7 +486,9 @@ export function createControlStrip(
       const item = activePanePress.item;
       activePanePress = null;
       clearPressedPart();
-      activatePane(item, options);
+      if (startClickFeedback(item)) {
+        activatePane(item, options);
+      }
       return;
     }
 
@@ -715,6 +769,11 @@ export function createControlStrip(
         return;
       }
 
+      if (paneActivationLocks.has(item.id)) {
+        event.preventDefault();
+        return;
+      }
+
       const rect = pane.getBoundingClientRect();
       const screenOriginX = event.screenX - event.clientX;
       const screenOriginY = event.screenY - event.clientY;
@@ -819,6 +878,9 @@ export function createControlStrip(
   strip.remove = () => {
     clearLongPressTimer();
     clearSnapBackTimer();
+    for (const itemId of [...clickFeedbackTimers.keys()]) {
+      clearClickFeedback(itemId);
+    }
     if (contentResizeFrame !== null) {
       window.cancelAnimationFrame(contentResizeFrame);
       contentResizeFrame = null;
