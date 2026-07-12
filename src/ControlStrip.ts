@@ -1098,7 +1098,7 @@ function getPaneWidth(track: HTMLElement): number {
   return pane?.getBoundingClientRect().width || defaultPaneWidth;
 }
 
-function normalizeConfiguredVisibleCount(visibleIcons: number | null | undefined): number | null {
+export function normalizeConfiguredVisibleCount(visibleIcons: number | null | undefined): number | null {
   if (visibleIcons === null || visibleIcons === undefined || !Number.isFinite(visibleIcons)) {
     return null;
   }
@@ -1107,7 +1107,7 @@ function normalizeConfiguredVisibleCount(visibleIcons: number | null | undefined
   return normalized > 0 ? normalized : null;
 }
 
-function normalizeSnapBackDelayMs(snapBackSeconds: number | undefined): number {
+export function normalizeSnapBackDelayMs(snapBackSeconds: number | undefined): number {
   if (snapBackSeconds === undefined || !Number.isFinite(snapBackSeconds)) {
     return defaultSnapBackDelayMs;
   }
@@ -1115,7 +1115,7 @@ function normalizeSnapBackDelayMs(snapBackSeconds: number | undefined): number {
   return Math.max(0, snapBackSeconds * 1000);
 }
 
-function getDesiredVisibleCount(itemCount: number, configuredVisibleCount: number | null): number {
+export function getDesiredVisibleCount(itemCount: number, configuredVisibleCount: number | null): number {
   if (itemCount === 0) {
     return 0;
   }

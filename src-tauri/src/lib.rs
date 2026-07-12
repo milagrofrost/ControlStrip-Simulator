@@ -1330,3 +1330,129 @@ fn sanitize_id(path: &Path) -> String {
         id
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn running_window(wm_class: &str, wm_class_instance: &str, title: &str) -> RunningWindow {
+        RunningWindow {
+            id: "0x100".to_string(),
+            title: title.to_string(),
+            wm_class_instance: wm_class_instance.to_string(),
+            wm_class: wm_class.to_string(),
+            pid: None,
+        }
+    }
+
+    fn item(match_info: Option<WindowMatch>) -> ControlStripItem {
+        ControlStripItem {
+            id: "firefox".to_string(),
+            label: "Firefox".to_string(),
+            icon: None,
+            desktop_file: "/usr/share/applications/firefox.desktop".to_string(),
+            is_pinned: true,
+            is_open: false,
+            windows: Vec::new(),
+            r#match: match_info,
+            disabled: None,
+            error: None,
+        }
+    }
+
+    #[test]
+    fn parses_desktop_entry_fields_and_ignores_other_groups() {
+        let parsed = parse_desktop_file(
+            r#"
+[Other Group]
+Name=Wrong
+
+[Desktop Entry]
+Type=Application
+Name=Example\sApp
+Exec=example --flag
+Icon=example
+StartupWMClass=Example.App
+Hidden=false
+NoDisplay=true
+Comment=Line\nTwo
+"#,
+        );
+
+        assert_eq!(parsed.name.as_deref(), Some("Example App"));
+        assert_eq!(parsed.exec.as_deref(), Some("example --flag"));
+        assert_eq!(parsed.icon.as_deref(), Some("example"));
+        assert_eq!(parsed.startup_wm_class.as_deref(), Some("Example.App"));
+        assert_eq!(parsed.r#type.as_deref(), Some("Application"));
+        assert_eq!(parsed.hidden, Some(false));
+        assert_eq!(parsed.no_display, Some(true));
+        assert_eq!(parsed.comment.as_deref(), Some("Line\nTwo"));
+    }
+
+    #[test]
+    fn validates_desktop_entries_required_for_launch() {
+        let valid = ParsedDesktopFile {
+            name: Some("Example".to_string()),
+            exec: Some("example".to_string()),
+            r#type: Some("Application".to_string()),
+            ..ParsedDesktopFile::default()
+        };
+        assert_eq!(validate_desktop_file(&valid), None);
+
+        let missing_exec = ParsedDesktopFile {
+            exec: None,
+            ..valid.clone()
+        };
+        assert_eq!(validate_desktop_file(&missing_exec).as_deref(), Some("Missing required Exec"));
+
+        let hidden = ParsedDesktopFile {
+            hidden: Some(true),
+            ..valid
+        };
+        assert_eq!(validate_desktop_file(&hidden).as_deref(), Some("Hidden=true"));
+    }
+
+    #[test]
+    fn validates_focus_ids_without_shell_metacharacters() {
+        assert!(is_valid_window_id("0x03a00007"));
+        assert!(is_valid_window_id("12345"));
+        assert!(!is_valid_window_id("0x"));
+        assert!(!is_valid_window_id("0x12;wmctrl"));
+        assert!(!is_valid_window_id("12 34"));
+
+        assert!(is_valid_app_id("running:org-example-app"));
+        assert!(!is_valid_app_id(""));
+        assert!(!is_valid_app_id("running/app"));
+    }
+
+    #[test]
+    fn matches_configured_window_class_and_title() {
+        let pinned = item(Some(WindowMatch {
+            wm_class: Some("firefox".to_string()),
+            title_contains: Some("docs".to_string()),
+        }));
+
+        assert!(does_window_match_item(
+            &pinned,
+            &running_window("Navigator.Firefox", "", "Docs - Rust")
+        ));
+        assert!(!does_window_match_item(
+            &pinned,
+            &running_window("Navigator.Firefox", "", "Mail")
+        ));
+    }
+
+    #[test]
+    fn falls_back_to_desktop_stem_and_normalizes_temporary_ids() {
+        let pinned = item(None);
+        assert!(does_window_match_item(
+            &pinned,
+            &running_window("org.mozilla.firefox", "", "Browser")
+        ));
+        assert_eq!(
+            normalize_temporary_group_id(" org.gnome.Terminal "),
+            "org-gnome-terminal"
+        );
+        assert_eq!(normalize_temporary_group_id(" !!! "), "unknown");
+    }
+}
