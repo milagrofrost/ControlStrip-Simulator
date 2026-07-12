@@ -18,6 +18,7 @@ jobs:
           ref: agent/icon-data-urls
           fetch-depth: 0
       - run: python3 scripts/apply_popup_coordinate_diagnostics.py
+      - run: python3 scripts/fix_popup_diagnostic_type.py
       - run: npm ci && npm run build
       - run: |
           sudo apt-get update
