@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc, Mutex,
+    Arc, Mutex, OnceLock,
 };
 use std::{thread, time::Duration};
 
@@ -27,6 +27,7 @@ const DEFAULT_SCREEN_CORNER_RADIUS: u32 = 18;
 const DEFAULT_SCREEN_CORNER_COLOR: &str = "#000000";
 const DEFAULT_SCREEN_CORNER_POSITION: &str = "bottom-left";
 const MAX_ICON_BYTES: u64 = 1_048_576;
+const MAX_RECURSIVE_ICON_ENTRIES: usize = 20_000;
 const DEFAULT_CONFIG: &str = r##"# ControlStrip Simulator config
 # Window placement is native Tauri window geometry in physical screen pixels.
 window:
@@ -738,6 +739,11 @@ struct TransientAppResolution {
 #[derive(Default)]
 struct TransientAppResolutionCache {
     entries: Mutex<HashMap<String, TransientAppResolution>>,
+}
+
+#[derive(Default)]
+struct IconResolutionCache {
+    entries: Mutex<HashMap<String, Option<String>>>,
 }
 
 #[tauri::command]
@@ -1546,15 +1552,43 @@ fn resolve_icon(icon: &str) -> Option<String> {
         return None;
     }
 
+    resolve_icon_with_cache(icon, &icon_search_roots(), global_icon_resolution_cache())
+}
+
+fn global_icon_resolution_cache() -> &'static IconResolutionCache {
+    static CACHE: OnceLock<IconResolutionCache> = OnceLock::new();
+    CACHE.get_or_init(IconResolutionCache::default)
+}
+
+fn resolve_icon_with_cache(
+    icon: &str,
+    roots: &[PathBuf],
+    cache: &IconResolutionCache,
+) -> Option<String> {
+    let cache_key = icon.trim().to_string();
+    if cache_key.is_empty() {
+        return None;
+    }
+
+    if let Some(cached) = cache.entries.lock().ok()?.get(&cache_key).cloned() {
+        return cached;
+    }
+
+    let resolved = resolve_icon_uncached(&cache_key, roots);
+    if let Ok(mut entries) = cache.entries.lock() {
+        entries.insert(cache_key, resolved.clone());
+    }
+    resolved
+}
+
+fn resolve_icon_uncached(icon: &str, roots: &[PathBuf]) -> Option<String> {
     let icon_path = expand_home(icon);
     if icon_path.is_absolute() {
         return load_icon_data_url(&icon_path);
     }
 
-    for path in icon_search_roots() {
-        if let Some(icon_path) = find_icon_in_root(&path, icon) {
-            return load_icon_data_url(&icon_path);
-        }
+    if let Some(icon_path) = find_icon_in_roots(roots, icon) {
+        return load_icon_data_url(&icon_path);
     }
 
     eprintln!("Control Strip: unresolved icon {}", icon);
@@ -1621,39 +1655,93 @@ fn load_icon_data_url(path: &Path) -> Option<String> {
     }
 }
 
-fn find_icon_in_root(root: &Path, icon: &str) -> Option<PathBuf> {
-    if !root.exists() {
-        return None;
-    }
+fn find_icon_in_roots(roots: &[PathBuf], icon: &str) -> Option<PathBuf> {
+    let existing_roots = roots
+        .iter()
+        .filter(|root| root.exists())
+        .collect::<Vec<_>>();
 
-    for candidate in direct_icon_candidates(root, icon) {
-        if candidate.exists() {
+    for candidate in ranked_icon_candidates(&existing_roots, icon) {
+        if candidate.is_file() {
             return Some(candidate);
         }
     }
 
     let wanted_names = icon_file_names(icon);
-    WalkDir::new(root)
-        .follow_links(false)
-        .into_iter()
-        .filter_map(Result::ok)
-        .find_map(|entry| {
+    let mut matches = Vec::new();
+    for root in existing_roots {
+        let mut visited = 0usize;
+        for entry in WalkDir::new(root)
+            .follow_links(false)
+            .sort_by_file_name()
+            .into_iter()
+            .filter_map(Result::ok)
+        {
+            visited += 1;
+            if visited > MAX_RECURSIVE_ICON_ENTRIES {
+                eprintln!(
+                    "Control Strip: stopped broad icon search in {} after {} entries",
+                    root.display(),
+                    MAX_RECURSIVE_ICON_ENTRIES
+                );
+                break;
+            }
             if !entry.file_type().is_file() {
-                return None;
+                continue;
             }
 
             let file_name = entry.file_name().to_string_lossy();
-            wanted_names
+            if wanted_names
                 .iter()
                 .any(|wanted| wanted == file_name.as_ref())
-                .then(|| entry.path().to_path_buf())
-        })
+            {
+                matches.push(entry.path().to_path_buf());
+            }
+        }
+    }
+
+    matches.sort();
+    matches.into_iter().next()
+}
+
+fn ranked_icon_candidates(roots: &[&PathBuf], icon: &str) -> Vec<PathBuf> {
+    roots
+        .iter()
+        .flat_map(|root| direct_icon_candidates(root, icon))
+        .collect()
 }
 
 fn direct_icon_candidates(root: &Path, icon: &str) -> Vec<PathBuf> {
     icon_file_names(icon)
         .into_iter()
-        .map(|name| root.join(name))
+        .flat_map(|name| {
+            let themed_dirs = [
+                "hicolor/scalable/apps",
+                "hicolor/512x512/apps",
+                "hicolor/256x256/apps",
+                "hicolor/128x128/apps",
+                "hicolor/64x64/apps",
+                "hicolor/48x48/apps",
+                "hicolor/32x32/apps",
+                "hicolor/24x24/apps",
+                "hicolor/16x16/apps",
+                "scalable/apps",
+                "512x512/apps",
+                "256x256/apps",
+                "128x128/apps",
+                "64x64/apps",
+                "48x48/apps",
+                "32x32/apps",
+                "24x24/apps",
+                "16x16/apps",
+            ];
+
+            std::iter::once(root.join(&name)).chain(
+                themed_dirs
+                    .into_iter()
+                    .map(move |dir| root.join(dir).join(&name)),
+            )
+        })
         .collect()
 }
 
@@ -1670,15 +1758,45 @@ fn icon_file_names(icon: &str) -> Vec<String> {
 }
 
 fn icon_search_roots() -> Vec<PathBuf> {
+    icon_search_roots_from_env(
+        env::var_os("XDG_DATA_HOME"),
+        env::var_os("XDG_DATA_DIRS"),
+        dirs::home_dir(),
+    )
+}
+
+fn icon_search_roots_from_env(
+    xdg_data_home: Option<std::ffi::OsString>,
+    xdg_data_dirs: Option<std::ffi::OsString>,
+    home: Option<PathBuf>,
+) -> Vec<PathBuf> {
     let mut roots = Vec::new();
 
-    if let Some(home) = dirs::home_dir() {
+    if let Some(data_home) = xdg_data_home {
+        roots.push(PathBuf::from(data_home).join("icons"));
+    } else if let Some(home) = home {
         roots.push(home.join(".local/share/icons"));
     }
 
+    let data_dirs = xdg_data_dirs.unwrap_or_else(|| "/usr/local/share:/usr/share".into());
+    for data_dir in env::split_paths(&data_dirs) {
+        roots.push(data_dir.join("icons"));
+    }
+
+    roots.push(PathBuf::from("/usr/local/share/pixmaps"));
     roots.push(PathBuf::from("/usr/share/pixmaps"));
-    roots.push(PathBuf::from("/usr/share/icons"));
-    roots
+
+    dedupe_paths(roots)
+}
+
+fn dedupe_paths(paths: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut deduped = Vec::new();
+    for path in paths {
+        if !deduped.contains(&path) {
+            deduped.push(path);
+        }
+    }
+    deduped
 }
 
 fn parse_desktop_bool(value: &str) -> Option<bool> {
@@ -1761,6 +1879,13 @@ mod tests {
             contents.push('\n');
         }
         fs::write(&path, contents).expect("write desktop file");
+        path
+    }
+
+    fn write_icon(root: &Path, relative_path: &str, contents: &[u8]) -> PathBuf {
+        let path = root.join(relative_path);
+        fs::create_dir_all(path.parent().expect("icon parent")).expect("create icon dir");
+        fs::write(&path, contents).expect("write icon");
         path
     }
 
@@ -2148,5 +2273,88 @@ Comment=Line\nTwo
         assert!(cached.desktop_file.is_none());
         assert!(cached.label.is_none());
         assert!(cached.icon.is_none());
+    }
+
+    #[test]
+    fn icon_resolution_cache_reuses_successful_results() {
+        let root = unique_test_dir("icon-cache-hit");
+        let icon_path = write_icon(&root, "hicolor/48x48/apps/example.png", b"first");
+        let cache = IconResolutionCache::default();
+
+        let first = resolve_icon_with_cache("example", &[root.clone()], &cache).expect("icon");
+        fs::write(&icon_path, b"second").expect("replace icon");
+        let second = resolve_icon_with_cache("example", &[root], &cache).expect("cached icon");
+
+        assert_eq!(first, second);
+        assert!(first.contains(&BASE64_STANDARD.encode(b"first")));
+    }
+
+    #[test]
+    fn icon_resolution_cache_reuses_failed_results() {
+        let root = unique_test_dir("icon-cache-miss");
+        let cache = IconResolutionCache::default();
+
+        assert!(resolve_icon_with_cache("missing", &[root.clone()], &cache).is_none());
+        write_icon(&root, "missing.png", b"created later");
+
+        assert!(resolve_icon_with_cache("missing", &[root], &cache).is_none());
+    }
+
+    #[test]
+    fn icon_resolution_prefers_direct_candidates_before_recursive_matches() {
+        let root = unique_test_dir("icon-direct");
+        let direct = write_icon(&root, "example.png", b"direct");
+        write_icon(&root, "theme/apps/example.png", b"recursive");
+
+        let resolved = find_icon_in_roots(&[root], "example").expect("icon path");
+
+        assert_eq!(resolved, direct);
+    }
+
+    #[test]
+    fn icon_roots_respect_xdg_locations_and_system_defaults() {
+        let roots = icon_search_roots_from_env(
+            Some("/tmp/data-home".into()),
+            Some("/opt/share:/custom/share".into()),
+            Some(PathBuf::from("/home/example")),
+        );
+
+        assert_eq!(
+            roots,
+            vec![
+                PathBuf::from("/tmp/data-home/icons"),
+                PathBuf::from("/opt/share/icons"),
+                PathBuf::from("/custom/share/icons"),
+                PathBuf::from("/usr/local/share/pixmaps"),
+                PathBuf::from("/usr/share/pixmaps"),
+            ]
+        );
+    }
+
+    #[test]
+    fn icon_roots_include_usr_local_share_icons_by_default() {
+        let roots = icon_search_roots_from_env(None, None, Some(PathBuf::from("/home/example")));
+
+        assert!(roots.contains(&PathBuf::from("/home/example/.local/share/icons")));
+        assert!(roots.contains(&PathBuf::from("/usr/local/share/icons")));
+        assert!(roots.contains(&PathBuf::from("/usr/share/icons")));
+        assert!(roots.contains(&PathBuf::from("/usr/local/share/pixmaps")));
+        assert!(roots.contains(&PathBuf::from("/usr/share/pixmaps")));
+    }
+
+    #[test]
+    fn icon_candidate_ranking_is_deterministic() {
+        let root = PathBuf::from("/icons");
+        let candidates = direct_icon_candidates(&root, "example");
+
+        assert_eq!(candidates[0], PathBuf::from("/icons/example.png"));
+        assert_eq!(
+            candidates[1],
+            PathBuf::from("/icons/hicolor/scalable/apps/example.png")
+        );
+        assert_eq!(
+            candidates[2],
+            PathBuf::from("/icons/hicolor/512x512/apps/example.png")
+        );
     }
 }
