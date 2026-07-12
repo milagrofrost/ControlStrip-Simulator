@@ -1,0 +1,32 @@
+name: Apply click feedback
+
+on:
+  push:
+    branches:
+      - agent/icon-data-urls
+    paths:
+      - .github/click-feedback-trigger
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/icon-data-urls
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: python3 .github/scripts/apply-click-feedback.py
+      - run: npm ci
+      - run: npm run build
+      - name: Commit implementation
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/ControlStrip.ts
+          git commit -m "Add visible pane click acknowledgement"
+          git push
