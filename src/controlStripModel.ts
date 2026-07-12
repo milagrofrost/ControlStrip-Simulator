@@ -409,8 +409,8 @@ function toControlStripWindow(windowItem: RunningWindow): ControlStripWindow {
 
 
 export interface WindowMenuAnchor {
-  left: number;
-  top: number;
+  screenLeft: number;
+  screenTop: number;
   width: number;
 }
 
@@ -426,8 +426,8 @@ export async function showWindowMenu(
     appId: item.id,
     label: item.label,
     windows: item.windows ?? [],
-    anchorLeft: anchor.left,
-    anchorTop: anchor.top,
+    screenLeft: anchor.screenLeft,
+    screenTop: anchor.screenTop,
     anchorWidth: anchor.width
   });
 }

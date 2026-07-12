@@ -411,8 +411,8 @@ fn show_window_menu(
     app_id: String,
     label: String,
     windows: Vec<ControlStripWindow>,
-    anchor_left: f64,
-    anchor_top: f64,
+    screen_left: f64,
+    screen_top: f64,
     anchor_width: f64,
 ) -> Result<(), String> {
     if let Some(existing) = app.get_webview_window("window-menu") {
@@ -432,9 +432,6 @@ fn show_window_menu(
     let scale = window
         .scale_factor()
         .map_err(|error| format!("Failed to read scale factor: {error}"))?;
-    let parent_position = window
-        .outer_position()
-        .map_err(|error| format!("Failed to read Control Strip position: {error}"))?;
 
     let longest_title_chars = payload
         .windows
@@ -449,13 +446,10 @@ fn show_window_menu(
     let physical_width = (logical_width * scale).ceil().max(1.0) as u32;
     let physical_height = (logical_height * scale).ceil().max(1.0) as u32;
 
-    let mut x = parent_position.x + (anchor_left * scale).round() as i32;
-    // Anchor to the pane's actual top edge inside the webview. The native
-    // window may include transparent space above the visible Control Strip.
-    let mut y = parent_position.y
-        + (anchor_top * scale).round() as i32
-        - physical_height as i32
-        + 1;
+    // screen_left/screen_top are absolute CSS screen coordinates captured
+    // from the pointer event. Convert them once to native physical pixels.
+    let mut x = (screen_left * scale).round() as i32;
+    let mut y = (screen_top * scale).round() as i32 - physical_height as i32 + 1;
 
     if let Some(monitor) = window.current_monitor().map_err(|error| error.to_string())? {
         let monitor_position = monitor.position();

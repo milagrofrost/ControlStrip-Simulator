@@ -71,7 +71,7 @@ export type ScreenCornerOptions = {
 export type ControlStripOptions = {
   onLaunchPinnedApp?: (item: ControlStripItem) => void;
   onFocusAppWindows?: (item: ControlStripItem) => void;
-  onOpenWindowMenu?: (item: ControlStripItem, anchor: { left: number; top: number; width: number }) => void;
+  onOpenWindowMenu?: (item: ControlStripItem, anchor: { screenLeft: number; screenTop: number; width: number }) => void;
   onCloseWindowMenu?: () => void;
   onContentResize?: (size: { width: number; height: number }) => void;
   sizing?: ControlStripSizingOptions;
@@ -112,6 +112,8 @@ type OpenWindowMenu = {
     // Viewport height captured with the rect, so the menu can be anchored to the
     // strip's distance-from-bottom and stay put when the window is resized.
     viewportHeight: number;
+    screenLeft: number;
+    screenTop: number;
   };
 };
 
@@ -679,8 +681,8 @@ export function createControlStrip(
 
       if (options.onOpenWindowMenu) {
         options.onOpenWindowMenu(item, {
-          left: anchorRect.left,
-          top: anchorRect.top,
+          screenLeft: anchorRect.screenLeft,
+          screenTop: anchorRect.screenTop,
           width: anchorRect.width
         });
         return;
@@ -694,7 +696,9 @@ export function createControlStrip(
           width: anchorRect.width,
           bottom: anchorRect.bottom,
           right: anchorRect.right,
-          viewportHeight: anchorRect.viewportHeight
+          viewportHeight: anchorRect.viewportHeight,
+          screenLeft: anchorRect.screenLeft,
+          screenTop: anchorRect.screenTop
         }
       };
       renderMenu();
@@ -712,13 +716,17 @@ export function createControlStrip(
       }
 
       const rect = pane.getBoundingClientRect();
+      const screenOriginX = event.screenX - event.clientX;
+      const screenOriginY = event.screenY - event.clientY;
       const anchorRect = {
         left: rect.left,
         top: rect.top,
         width: rect.width,
         bottom: rect.bottom,
         right: rect.right,
-        viewportHeight: window.innerHeight
+        viewportHeight: window.innerHeight,
+        screenLeft: screenOriginX + rect.left,
+        screenTop: screenOriginY + rect.top
       };
 
       activePanePress = {
