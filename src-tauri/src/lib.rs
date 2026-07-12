@@ -414,7 +414,6 @@ fn show_window_menu(
     screen_left: f64,
     screen_top: f64,
     anchor_width: f64,
-    debug_json: String,
 ) -> Result<(), String> {
     if let Some(existing) = app.get_webview_window("window-menu") {
         existing.close().map_err(|error| format!("Failed to close existing window menu: {error}"))?;
@@ -433,10 +432,6 @@ fn show_window_menu(
     let scale = window
         .scale_factor()
         .map_err(|error| format!("Failed to read scale factor: {error}"))?;
-    let parent_position = window.outer_position()
-        .map_err(|error| format!("Failed to read Control Strip position: {error}"))?;
-    let parent_size = window.outer_size()
-        .map_err(|error| format!("Failed to read Control Strip size: {error}"))?;
 
     let longest_title_chars = payload
         .windows
@@ -457,50 +452,15 @@ fn show_window_menu(
     let raw_y = (screen_top * scale).round() as i32 - physical_height as i32 + 1;
     let mut x = raw_x;
     let mut y = raw_y;
-    let mut monitor_debug = String::from("none");
 
     if let Some(monitor) = window.current_monitor().map_err(|error| error.to_string())? {
         let monitor_position = monitor.position();
         let monitor_size = monitor.size();
         let max_x = monitor_position.x + monitor_size.width as i32 - physical_width as i32;
         let max_y = monitor_position.y + monitor_size.height as i32 - physical_height as i32;
-        monitor_debug = format!(
-            "position=({}, {}) size={}x{} max=({}, {})",
-            monitor_position.x,
-            monitor_position.y,
-            monitor_size.width,
-            monitor_size.height,
-            max_x,
-            max_y
-        );
         x = x.clamp(monitor_position.x, max_x.max(monitor_position.x));
         y = y.clamp(monitor_position.y, max_y.max(monitor_position.y));
     }
-
-    eprintln!("CONTROL_STRIP_POPUP_DEBUG BEGIN");
-    eprintln!("frontend={debug_json}");
-    eprintln!(
-        "native parent_position=({}, {}) parent_size={}x{} scale_factor={scale}",
-        parent_position.x,
-        parent_position.y,
-        parent_size.width,
-        parent_size.height
-    );
-    eprintln!(
-        "native received screen_left={screen_left} screen_top={screen_top} anchor_width={anchor_width}"
-    );
-    eprintln!(
-        "native popup logical={}x{} physical={}x{} raw_position=({}, {}) clamped_position=({}, {})",
-        logical_width,
-        logical_height,
-        physical_width,
-        physical_height,
-        raw_x,
-        raw_y,
-        x,
-        y
-    );
-    eprintln!("native monitor {monitor_debug}");
 
     let menu = WebviewWindowBuilder::new(
         &app,
@@ -521,9 +481,9 @@ fn show_window_menu(
     .build()
     .map_err(|error| format!("Failed to create window menu: {error}"))?;
 
-    // The Linux webview reports 0x0 geometry until GTK/X11 maps the window.
-    // Show it first, return control to the event loop, and then reinforce the
-    // requested physical geometry twice in case the window manager adjusts it.
+    // GTK/X11 may ignore geometry set before a transparent popup is mapped.
+    // Show it first, then reapply size and position twice after mapping; the
+    // second pass handles window managers that adjust placement after creation.
     menu.show().map_err(|error| format!("Failed to show window menu: {error}"))?;
 
     let positioned_menu = menu.clone();
