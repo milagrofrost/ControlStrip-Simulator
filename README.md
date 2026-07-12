@@ -4,6 +4,9 @@ ControlStrip Simulator is a Linux/X11 desktop utility inspired by the classic Ma
 
 This is a retro desktop utility for small X11 sessions, Raspberry Pi builds, and classic Mac-inspired Linux environments. It is not a Wayland-first panel replacement and it is not a full desktop shell.
 
+<img width="208" height="41" alt="image" src="https://github.com/user-attachments/assets/87228a87-12e0-4989-9dcf-b5a24046832c" />
+
+
 ## What it does
 
 - Runs as a Tauri 2 app with a TypeScript/Vite frontend and Rust backend.
