@@ -59,7 +59,7 @@ screenCorner:
 pinned_apps: []
 "##;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(default)]
 struct ControlStripConfig {
     window: WindowPlacementConfig,
@@ -94,18 +94,6 @@ struct ScreenCornerConfig {
     position: String,
     radius: u32,
     color: String,
-}
-
-impl Default for ControlStripConfig {
-    fn default() -> Self {
-        Self {
-            window: WindowPlacementConfig::default(),
-            strip: StripBehaviorConfig::default(),
-            screen_corner: ScreenCornerConfig::default(),
-            window_filters: WindowFiltersConfig::default(),
-            pinned_apps: Vec::new(),
-        }
-    }
 }
 
 impl Default for WindowPlacementConfig {
@@ -747,6 +735,10 @@ struct IconResolutionCache {
 }
 
 #[tauri::command]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Tauri command mirrors frontend invoke arguments"
+)]
 fn show_window_menu(
     app: tauri::AppHandle,
     window: tauri::WebviewWindow,
@@ -1235,7 +1227,7 @@ fn ensure_config_file() -> Result<PathBuf, String> {
         .parent()
         .ok_or_else(|| format!("Config path has no parent: {}", config_path.display()))?;
 
-    fs::create_dir_all(&config_dir)
+    fs::create_dir_all(config_dir)
         .map_err(|error| format!("Failed to create {}: {error}", config_dir.display()))?;
 
     if !config_path.exists() {
@@ -2281,7 +2273,8 @@ Comment=Line\nTwo
         let icon_path = write_icon(&root, "hicolor/48x48/apps/example.png", b"first");
         let cache = IconResolutionCache::default();
 
-        let first = resolve_icon_with_cache("example", &[root.clone()], &cache).expect("icon");
+        let first =
+            resolve_icon_with_cache("example", std::slice::from_ref(&root), &cache).expect("icon");
         fs::write(&icon_path, b"second").expect("replace icon");
         let second = resolve_icon_with_cache("example", &[root], &cache).expect("cached icon");
 
@@ -2294,7 +2287,7 @@ Comment=Line\nTwo
         let root = unique_test_dir("icon-cache-miss");
         let cache = IconResolutionCache::default();
 
-        assert!(resolve_icon_with_cache("missing", &[root.clone()], &cache).is_none());
+        assert!(resolve_icon_with_cache("missing", std::slice::from_ref(&root), &cache).is_none());
         write_icon(&root, "missing.png", b"created later");
 
         assert!(resolve_icon_with_cache("missing", &[root], &cache).is_none());

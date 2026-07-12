@@ -7,6 +7,9 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "test": "vitest run",
+    "lint": "eslint src --max-warnings=0",
+    "format:check": "prettier --check --no-error-on-unmatched-pattern \"src/**/*.{ts,css}\" \"*.js\" \"package.json\" \"tsconfig.json\" \".prettierrc.json\" \"ISSUE23_REPORT.md\" \".github/workflows/*.{yml,yaml}\"",
+    "format": "prettier --write --no-error-on-unmatched-pattern \"src/**/*.{ts,css}\" \"*.js\" \"package.json\" \"tsconfig.json\" \".prettierrc.json\" \"ISSUE23_REPORT.md\" \".github/workflows/*.{yml,yaml}\"",
     "preview": "vite preview",
     "tauri": "tauri",
     "dev:tauri": "tauri dev",
@@ -16,8 +19,12 @@
     "@tauri-apps/api": "^2.11.1"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@tauri-apps/cli": "^2.11.4",
+    "eslint": "^10.7.0",
+    "prettier": "^3.9.5",
     "typescript": "^5.5.4",
+    "typescript-eslint": "^8.63.0",
     "vite": "^5.4.2",
     "vitest": "1.6.1"
   }

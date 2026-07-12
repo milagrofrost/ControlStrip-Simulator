@@ -95,6 +95,27 @@ Install JavaScript dependencies:
 npm install
 ```
 
+## Development validation
+
+Run the local quality gate with:
+
+```bash
+npm ci
+npm test
+npm run build
+npm run lint
+npm run format:check
+cargo fmt --manifest-path src-tauri/Cargo.toml --check
+cargo check --manifest-path src-tauri/Cargo.toml
+cargo test --manifest-path src-tauri/Cargo.toml
+cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+bash -n build.sh scripts/install-user-service.sh scripts/window-check.sh
+shellcheck build.sh scripts/install-user-service.sh scripts/window-check.sh
+```
+
+GUI behavior still needs manual testing in the target Raspberry Pi X11/Openbox
+environment.
+
 Run the real Tauri app:
 
 ```bash

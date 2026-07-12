@@ -45,11 +45,18 @@ export async function enrichTransientAppIcons(
   );
 }
 
-async function resolveTransientApp(wmClass: string): Promise<ResolvedTransientApp> {
+async function resolveTransientApp(
+  wmClass: string
+): Promise<ResolvedTransientApp> {
   try {
-    return await invoke<ResolvedTransientApp>('resolve_transient_app', { wmClass });
+    return await invoke<ResolvedTransientApp>('resolve_transient_app', {
+      wmClass
+    });
   } catch (error) {
-    console.debug(`Control Strip: no transient icon resolved for ${wmClass}`, error);
+    console.debug(
+      `Control Strip: no transient icon resolved for ${wmClass}`,
+      error
+    );
     return {};
   }
 }

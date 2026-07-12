@@ -1,8 +1,15 @@
 import { describe, expect, it } from 'vitest';
 
 import type { ControlStripItem } from './ControlStrip';
-import { getDesiredVisibleCount, normalizeConfiguredVisibleCount, normalizeSnapBackDelayMs } from './ControlStrip';
-import { applyRunningWindowsToItems, type RunningWindow } from './controlStripModel';
+import {
+  getDesiredVisibleCount,
+  normalizeConfiguredVisibleCount,
+  normalizeSnapBackDelayMs
+} from './ControlStrip';
+import {
+  applyRunningWindowsToItems,
+  type RunningWindow
+} from './controlStripModel';
 
 const pinnedBrowser: ControlStripItem = {
   id: 'firefox',
@@ -55,8 +62,16 @@ describe('running window application', () => {
     const result = applyRunningWindowsToItems(
       [pinnedBrowser],
       [
-        windowItem({ id: '0x100', title: 'Firefox window', wm_class: 'Navigator.Firefox' }),
-        windowItem({ id: '0x200', title: 'Terminal', wm_class: 'org.gnome.Terminal' })
+        windowItem({
+          id: '0x100',
+          title: 'Firefox window',
+          wm_class: 'Navigator.Firefox'
+        }),
+        windowItem({
+          id: '0x200',
+          title: 'Terminal',
+          wm_class: 'org.gnome.Terminal'
+        })
       ]
     );
 
@@ -77,10 +92,21 @@ describe('running window application', () => {
   });
 
   it('groups unmatched windows by normalized class key', () => {
-    const result = applyRunningWindowsToItems([], [
-      windowItem({ id: '0x300', title: 'Doc 1', wm_class: 'com.example.Editor' }),
-      windowItem({ id: '0x301', title: 'Doc 2', wm_class: 'com.example.Editor' })
-    ]);
+    const result = applyRunningWindowsToItems(
+      [],
+      [
+        windowItem({
+          id: '0x300',
+          title: 'Doc 1',
+          wm_class: 'com.example.Editor'
+        }),
+        windowItem({
+          id: '0x301',
+          title: 'Doc 2',
+          wm_class: 'com.example.Editor'
+        })
+      ]
+    );
 
     expect(result).toHaveLength(1);
     expect(result[0]).toMatchObject({
@@ -90,6 +116,48 @@ describe('running window application', () => {
         { id: '0x300', title: 'Doc 1' },
         { id: '0x301', title: 'Doc 2' }
       ]
+    });
+  });
+
+  it('uses instance fallback and preserves temporary group ordering', () => {
+    const result = applyRunningWindowsToItems(
+      [],
+      [
+        windowItem({
+          id: '0x500',
+          title: 'Palette',
+          wm_class_instance: 'org.example.Tools',
+          wm_class: ''
+        }),
+        windowItem({
+          id: '0x501',
+          title: 'No class',
+          wm_class_instance: '',
+          wm_class: ''
+        }),
+        windowItem({
+          id: '0x502',
+          title: 'Second palette',
+          wm_class_instance: 'org.example.Tools',
+          wm_class: ''
+        })
+      ]
+    );
+
+    expect(result.map((item) => item.id)).toEqual([
+      'running:org-example-tools',
+      'running:unknown'
+    ]);
+    expect(result[0]).toMatchObject({
+      label: 'Tools',
+      windows: [
+        { id: '0x500', title: 'Palette' },
+        { id: '0x502', title: 'Second palette' }
+      ]
+    });
+    expect(result[1]).toMatchObject({
+      label: 'No class',
+      windows: [{ id: '0x501', title: 'No class' }]
     });
   });
 
@@ -104,7 +172,13 @@ describe('running window application', () => {
           match: { wm_class: 'term' }
         }
       ],
-      [windowItem({ id: '0x400', title: 'Terminal', wm_class: 'org.gnome.Terminal' })]
+      [
+        windowItem({
+          id: '0x400',
+          title: 'Terminal',
+          wm_class: 'org.gnome.Terminal'
+        })
+      ]
     );
 
     expect(result[0]).toMatchObject({
