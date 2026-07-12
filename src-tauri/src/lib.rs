@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc,
+    Arc, Mutex,
 };
 use std::{thread, time::Duration};
 
@@ -374,10 +374,49 @@ fn ignore_wm_class(wm_class: String) -> Result<(), String> {
 
 #[tauri::command]
 fn resolve_desktop_file(wm_class: String) -> Result<String, String> {
-    let hint = wm_class.trim().to_ascii_lowercase();
+    resolve_desktop_file_for_wm_class(&wm_class).map(|path| path.display().to_string())
+}
+
+#[tauri::command]
+fn resolve_transient_app(
+    wm_class: String,
+    cache: tauri::State<'_, TransientAppResolutionCache>,
+) -> Result<TransientAppResolution, String> {
+    let identity = normalize_transient_identity(&wm_class);
+    if identity.is_empty() {
+        return Err("Window class is empty".to_string());
+    }
+
+    if let Some(cached) = cache
+        .entries
+        .lock()
+        .map_err(|_| "Transient app cache is poisoned".to_string())?
+        .get(&identity)
+        .cloned()
+    {
+        return Ok(cached);
+    }
+
+    let resolution = resolve_transient_app_uncached(&wm_class).unwrap_or_else(|error| {
+        eprintln!("Control Strip: no transient app resolved for {wm_class}: {error}");
+        TransientAppResolution::default()
+    });
+
+    cache
+        .entries
+        .lock()
+        .map_err(|_| "Transient app cache is poisoned".to_string())?
+        .insert(identity, resolution.clone());
+
+    Ok(resolution)
+}
+
+fn resolve_desktop_file_for_wm_class(wm_class: &str) -> Result<PathBuf, String> {
+    let hint = normalize_transient_identity(wm_class);
     if hint.is_empty() {
         return Err("Window class is empty".to_string());
     }
+
     let mut roots = Vec::new();
     if let Some(home) = dirs::home_dir() {
         roots.push(home.join(".local/share/applications"));
@@ -393,11 +432,35 @@ fn resolve_desktop_file(wm_class: String) -> Result<String, String> {
             let startup = desktop.startup_wm_class.as_deref().unwrap_or("").trim().to_ascii_lowercase();
             let stem = entry.path().file_stem().and_then(|value| value.to_str()).unwrap_or("").to_ascii_lowercase();
             if startup == hint || stem == hint || startup.contains(&hint) || stem.contains(&hint) {
-                return Ok(entry.path().display().to_string());
+                return Ok(entry.path().to_path_buf());
             }
         }
     }
     Err(format!("No installed .desktop file matched WM_CLASS {wm_class}"))
+}
+
+fn resolve_transient_app_uncached(wm_class: &str) -> Result<TransientAppResolution, String> {
+    let desktop_path = resolve_desktop_file_for_wm_class(wm_class)?;
+    let contents = fs::read_to_string(&desktop_path)
+        .map_err(|error| format!("Failed to read {}: {error}", desktop_path.display()))?;
+    let desktop = parse_desktop_file(&contents);
+
+    if let Some(error) = validate_desktop_file(&desktop) {
+        return Err(format!("Cannot use {}: {error}", desktop_path.display()));
+    }
+
+    let label = desktop
+        .name
+        .as_deref()
+        .filter(|name| !name.trim().is_empty())
+        .map(ToString::to_string);
+    let icon = desktop.icon.as_deref().and_then(resolve_icon);
+
+    Ok(TransientAppResolution {
+        desktop_file: Some(desktop_path.display().to_string()),
+        label,
+        icon,
+    })
 }
 
 #[derive(Debug, Serialize)]
@@ -406,6 +469,22 @@ struct WindowMenuPayload {
     app_id: String,
     label: String,
     windows: Vec<ControlStripWindow>,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TransientAppResolution {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    desktop_file: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    icon: Option<String>,
+}
+
+#[derive(Default)]
+struct TransientAppResolutionCache {
+    entries: Mutex<HashMap<String, TransientAppResolution>>,
 }
 
 #[tauri::command]
@@ -623,6 +702,7 @@ fn resize_strip_window(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .manage(TransientAppResolutionCache::default())
         .setup(|app| {
             let placement = load_window_placement();
             if let Some(window) = app.get_webview_window("main") {
@@ -647,6 +727,7 @@ pub fn run() {
             set_app_pinned,
             ignore_wm_class,
             resolve_desktop_file,
+            resolve_transient_app,
             focus_app_windows,
             show_window_menu,
             hide_window_menu,
@@ -1125,6 +1206,10 @@ fn normalize_temporary_group_id(wm_class: &str) -> String {
     }
 }
 
+fn normalize_transient_identity(value: &str) -> String {
+    value.trim().to_ascii_lowercase()
+}
+
 fn is_valid_app_id(app_id: &str) -> bool {
     !app_id.is_empty()
         && app_id
@@ -1454,5 +1539,39 @@ Comment=Line\nTwo
             "org-gnome-terminal"
         );
         assert_eq!(normalize_temporary_group_id(" !!! "), "unknown");
+    }
+
+    #[test]
+    fn normalizes_transient_identity_for_cache_keys() {
+        assert_eq!(normalize_transient_identity("  VLC  "), "vlc");
+        assert_eq!(
+            normalize_transient_identity("Org.Example.App"),
+            "org.example.app"
+        );
+        assert_eq!(normalize_transient_identity("   "), "");
+    }
+
+    #[test]
+    fn transient_resolution_cache_can_store_failed_results() {
+        let cache = TransientAppResolutionCache::default();
+        let key = normalize_transient_identity("Missing.App");
+
+        cache
+            .entries
+            .lock()
+            .expect("cache lock")
+            .insert(key.clone(), TransientAppResolution::default());
+
+        let cached = cache
+            .entries
+            .lock()
+            .expect("cache lock")
+            .get(&key)
+            .cloned()
+            .expect("cached failed result");
+
+        assert!(cached.desktop_file.is_none());
+        assert!(cached.label.is_none());
+        assert!(cached.icon.is_none());
     }
 }
