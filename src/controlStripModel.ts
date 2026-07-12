@@ -1,4 +1,4 @@
-import { convertFileSrc, invoke, isTauri } from '@tauri-apps/api/core';
+import { invoke, isTauri } from '@tauri-apps/api/core';
 
 import type { ControlStripItem, ControlStripWindow } from './ControlStrip';
 
@@ -296,7 +296,7 @@ export function applyRunningWindowsToItems(
 function normalizeBackendItem(item: BackendControlStripItem): ControlStripItem {
   return {
     ...item,
-    icon: item.icon ? convertFileSrc(item.icon) : undefined,
+    icon: item.icon ?? undefined,
     windows: item.windows ?? []
   };
 }
@@ -405,4 +405,37 @@ function toControlStripWindow(windowItem: RunningWindow): ControlStripWindow {
     id: windowItem.id,
     title: windowItem.title
   };
+}
+
+
+export interface WindowMenuAnchor {
+  screenLeft: number;
+  screenTop: number;
+  width: number;
+}
+
+export async function showWindowMenu(
+  item: ControlStripItem,
+  anchor: WindowMenuAnchor
+): Promise<void> {
+  if (!isTauri()) {
+    return;
+  }
+
+  await invoke('show_window_menu', {
+    appId: item.id,
+    label: item.label,
+    windows: item.windows ?? [],
+    screenLeft: anchor.screenLeft,
+    screenTop: anchor.screenTop,
+    anchorWidth: anchor.width
+  });
+}
+
+export async function hideWindowMenu(): Promise<void> {
+  if (!isTauri()) {
+    return;
+  }
+
+  await invoke('hide_window_menu');
 }

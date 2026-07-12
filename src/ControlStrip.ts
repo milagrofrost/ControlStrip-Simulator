@@ -71,6 +71,8 @@ export type ScreenCornerOptions = {
 export type ControlStripOptions = {
   onLaunchPinnedApp?: (item: ControlStripItem) => void;
   onFocusAppWindows?: (item: ControlStripItem) => void;
+  onOpenWindowMenu?: (item: ControlStripItem, anchor: { screenLeft: number; screenTop: number; width: number }) => void;
+  onCloseWindowMenu?: () => void;
   onContentResize?: (size: { width: number; height: number }) => void;
   sizing?: ControlStripSizingOptions;
   screenCorner?: ScreenCornerOptions;
@@ -110,6 +112,8 @@ type OpenWindowMenu = {
     // Viewport height captured with the rect, so the menu can be anchored to the
     // strip's distance-from-bottom and stay put when the window is resized.
     viewportHeight: number;
+    screenLeft: number;
+    screenTop: number;
   };
 };
 
@@ -134,7 +138,11 @@ type StripPart = {
 const initialVisibleStart = 0;
 const minVisibleCount = 1; // A zero-pane strip leaves the scroll controls acting on an invisible window.
 const defaultPaneWidth = 27;
-const longPressDelayMs = 1000;
+const longPressDelayMs = 500;
+const clickFeedbackDurationMs = 500;
+const clickFeedbackFirstReleaseMs = 120;
+const clickFeedbackSecondPressMs = 210;
+const clickFeedbackSecondReleaseMs = 330;
 const defaultSnapBackDelayMs = 10000;
 
 type ResizeState = {
@@ -163,6 +171,9 @@ export function createControlStrip(
   let openWindowMenu: OpenWindowMenu | null = null;
   let snapBackTimer: number | null = null;
   let contentResizeFrame: number | null = null;
+  const paneActivationLocks = new Set<string>();
+  const clickFeedbackPressedItems = new Set<string>();
+  const clickFeedbackTimers = new Map<string, number[]>();
   const eventController = new AbortController();
 
   const strip = document.createElement('section') as ControlStripElement;
@@ -183,20 +194,107 @@ export function createControlStrip(
 
   strip.append(track, screenCorner, emptyMessage, menuLayer, createAssetPreload());
 
+  const updatePressedVisuals = (): void => {
+    const canScrollLeft = !isCollapsed && visibleStart > 0;
+    const canScrollRight =
+      !isCollapsed && visibleCount > 0 && visibleStart + visibleCount < items.length;
+
+    for (const element of track.querySelectorAll<HTMLElement>('[data-pressed-part]')) {
+      const part = element.dataset.pressedPart as PressedPart;
+
+      if (element instanceof HTMLImageElement) {
+        if (part === 'head') {
+          element.src = pressedPart === 'head' ? CONTROL_STRIP_ASSETS.headHold : CONTROL_STRIP_ASSETS.head;
+        } else if (part === 'tail') {
+          element.src = pressedPart === 'tail' || resizeState
+            ? CONTROL_STRIP_ASSETS.tailHold
+            : CONTROL_STRIP_ASSETS.tail;
+        } else if (part === 'left') {
+          element.src = canScrollLeft && pressedPart === 'left'
+            ? CONTROL_STRIP_ASSETS.activeLeftHold
+            : canScrollLeft
+              ? CONTROL_STRIP_ASSETS.activeLeft
+              : CONTROL_STRIP_ASSETS.inactiveLeft;
+        } else if (part === 'right') {
+          element.src = canScrollRight && pressedPart === 'right'
+            ? CONTROL_STRIP_ASSETS.activeRightHold
+            : canScrollRight
+              ? CONTROL_STRIP_ASSETS.activeRight
+              : CONTROL_STRIP_ASSETS.inactiveRight;
+        }
+        continue;
+      }
+
+      if (part?.startsWith('pane:')) {
+        const itemId = part.slice('pane:'.length);
+        const item = items.find((candidate) => candidate.id === itemId);
+        if (!item) continue;
+        const isPressed = pressedPart === part || clickFeedbackPressedItems.has(itemId);
+        element.classList.toggle('is-pressed', isPressed);
+        element.style.backgroundImage = `url("${getPaneAsset(item, isPressed)}")`;
+      }
+    }
+  };
+
   const setPressedPart = (nextPressedPart: PressedPart): void => {
     if (pressedPart === nextPressedPart) {
       return;
     }
 
     pressedPart = nextPressedPart;
-    render();
+    updatePressedVisuals();
   };
 
   const clearPressedPart = (): void => {
     setPressedPart(null);
   };
 
+  const clearClickFeedback = (itemId: string): void => {
+    for (const timer of clickFeedbackTimers.get(itemId) ?? []) {
+      window.clearTimeout(timer);
+    }
+    clickFeedbackTimers.delete(itemId);
+    clickFeedbackPressedItems.delete(itemId);
+    paneActivationLocks.delete(itemId);
+    updatePressedVisuals();
+  };
+
+  const startClickFeedback = (item: ControlStripItem): boolean => {
+    if (paneActivationLocks.has(item.id)) {
+      return false;
+    }
+
+    paneActivationLocks.add(item.id);
+    clickFeedbackPressedItems.add(item.id);
+    updatePressedVisuals();
+
+    const timers = [
+      window.setTimeout(() => {
+        clickFeedbackPressedItems.delete(item.id);
+        updatePressedVisuals();
+      }, clickFeedbackFirstReleaseMs),
+      window.setTimeout(() => {
+        clickFeedbackPressedItems.add(item.id);
+        updatePressedVisuals();
+      }, clickFeedbackSecondPressMs),
+      window.setTimeout(() => {
+        clickFeedbackPressedItems.delete(item.id);
+        updatePressedVisuals();
+      }, clickFeedbackSecondReleaseMs),
+      window.setTimeout(() => {
+        clickFeedbackTimers.delete(item.id);
+        clickFeedbackPressedItems.delete(item.id);
+        paneActivationLocks.delete(item.id);
+        updatePressedVisuals();
+      }, clickFeedbackDurationMs)
+    ];
+
+    clickFeedbackTimers.set(item.id, timers);
+    return true;
+  };
+
   const closeWindowMenu = (): void => {
+    options.onCloseWindowMenu?.();
     if (!openWindowMenu) {
       return;
     }
@@ -364,7 +462,7 @@ export function createControlStrip(
       const itemId = activePressedPart.slice('pane:'.length);
       const item = items.find((candidate) => candidate.id === itemId);
 
-      if (item) {
+      if (item && startClickFeedback(item)) {
         activatePane(item, options);
       }
     }
@@ -388,7 +486,9 @@ export function createControlStrip(
       const item = activePanePress.item;
       activePanePress = null;
       clearPressedPart();
-      activatePane(item, options);
+      if (startClickFeedback(item)) {
+        activatePane(item, options);
+      }
       return;
     }
 
@@ -616,6 +716,7 @@ export function createControlStrip(
     );
 
     track.replaceChildren(...trackParts);
+    updatePressedVisuals();
     scheduleContentResize();
   };
 
@@ -631,6 +732,16 @@ export function createControlStrip(
       }
 
       longPressTriggered = true;
+
+      if (options.onOpenWindowMenu) {
+        options.onOpenWindowMenu(item, {
+          screenLeft: anchorRect.screenLeft,
+          screenTop: anchorRect.screenTop,
+          width: anchorRect.width
+        });
+        return;
+      }
+
       openWindowMenu = {
         itemId: item.id,
         anchorRect: {
@@ -639,7 +750,9 @@ export function createControlStrip(
           width: anchorRect.width,
           bottom: anchorRect.bottom,
           right: anchorRect.right,
-          viewportHeight: anchorRect.viewportHeight
+          viewportHeight: anchorRect.viewportHeight,
+          screenLeft: anchorRect.screenLeft,
+          screenTop: anchorRect.screenTop
         }
       };
       renderMenu();
@@ -656,14 +769,23 @@ export function createControlStrip(
         return;
       }
 
+      if (paneActivationLocks.has(item.id)) {
+        event.preventDefault();
+        return;
+      }
+
       const rect = pane.getBoundingClientRect();
+      const screenOriginX = event.screenX - event.clientX;
+      const screenOriginY = event.screenY - event.clientY;
       const anchorRect = {
         left: rect.left,
         top: rect.top,
         width: rect.width,
         bottom: rect.bottom,
         right: rect.right,
-        viewportHeight: window.innerHeight
+        viewportHeight: window.innerHeight,
+        screenLeft: screenOriginX + rect.left,
+        screenTop: screenOriginY + rect.top
       };
 
       activePanePress = {
@@ -705,21 +827,22 @@ export function createControlStrip(
   };
 
   const renderMenu = (): void => {
-    menuLayer.replaceChildren();
-    // Always re-measure: opening grows the window, closing shrinks it back.
-    scheduleContentResize();
-
     if (!openWindowMenu) {
+      menuLayer.replaceChildren();
+      scheduleContentResize();
       return;
     }
 
     const item = items.find((candidate) => candidate.id === openWindowMenu?.itemId);
     if (!item) {
+      menuLayer.replaceChildren();
+      scheduleContentResize();
       return;
     }
 
     const menu = createWindowMenu(item, openWindowMenu, closeWindowMenu);
-    menuLayer.append(menu);
+    menuLayer.replaceChildren(menu);
+    scheduleContentResize();
   };
 
   strip.setItems = (nextItems: ControlStripItem[]): void => {
@@ -755,6 +878,9 @@ export function createControlStrip(
   strip.remove = () => {
     clearLongPressTimer();
     clearSnapBackTimer();
+    for (const itemId of [...clickFeedbackTimers.keys()]) {
+      clearClickFeedback(itemId);
+    }
     if (contentResizeFrame !== null) {
       window.cancelAnimationFrame(contentResizeFrame);
       contentResizeFrame = null;
@@ -777,6 +903,7 @@ function createImagePart(
     .join(' ');
   image.src = part.src;
   image.alt = part.alt;
+  image.dataset.pressedPart = part.pressedPart;
   image.draggable = false;
 
   if (part.isPressable) {
@@ -840,16 +967,18 @@ function createPane(
     .join(' ');
   pane.style.backgroundImage = `url("${getPaneAsset(item, isPressed)}")`;
   pane.dataset.itemId = item.id;
+  pane.dataset.pressedPart = panePressedPart;
   pane.setAttribute('role', 'img');
-  pane.setAttribute('aria-label', item.label);
-  pane.title = item.error ? `${item.label}: ${item.error}` : item.label;
+  pane.setAttribute('aria-label', item.error ? `${item.label}: ${item.error}` : item.label);
 
   if (!item.disabled) {
     attachPaneHandlers(pane, item, panePressedPart);
   }
 
   const icon = document.createElement('span');
-  icon.className = 'control-strip__icon';
+  icon.className = ['control-strip__icon', item.icon ? 'has-image' : 'has-text']
+    .filter(Boolean)
+    .join(' ');
   if (item.icon) {
     const iconImage = document.createElement('img');
     iconImage.className = 'control-strip__icon-image';
@@ -934,7 +1063,8 @@ function hasSelectableWindows(item: ControlStripItem): boolean {
 }
 
 function getPlaceholderIcon(label: string): string {
-  return label.trim().charAt(0).toUpperCase() || '?';
+  const trimmed = label.trim();
+  return trimmed.slice(0, 2) || '?';
 }
 
 function attachPressHandlers(

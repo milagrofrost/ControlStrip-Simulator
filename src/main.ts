@@ -1,5 +1,6 @@
 import './style.css';
 import { createControlStrip } from './ControlStrip';
+import { bootstrapWindowMenu } from './windowMenu';
 import type { ControlStripItem } from './ControlStrip';
 import {
   applyRunningWindowsToItems,
@@ -10,6 +11,8 @@ import {
   resizeStripWindow,
   resolveDesktopFile,
   setAppPinned,
+  showWindowMenu,
+  hideWindowMenu,
   startRunningWindowPolling
 } from './controlStripModel';
 
@@ -21,7 +24,13 @@ if (!app) {
 
 app.innerHTML = '';
 
-void bootstrap();
+const isWindowMenu = new URLSearchParams(window.location.search).has('windowMenu');
+
+if (isWindowMenu) {
+  void bootstrapWindowMenu();
+} else {
+  void bootstrap();
+}
 
 async function bootstrap(): Promise<void> {
   const model = await loadControlStripModel();
@@ -29,6 +38,7 @@ async function bootstrap(): Promise<void> {
   let latestRunningWindows: Parameters<typeof applyRunningWindowsToItems>[1] = [];
   let contextMenu: HTMLDivElement | null = null;
   let stripContentSize = { width: 1, height: 24 };
+  let lastRequestedStripSize = { width: 0, height: 0 };
 
   const strip = createControlStrip(items, {
     sizing: model.strip,
@@ -43,14 +53,40 @@ async function bootstrap(): Promise<void> {
         void focusAppWindows(item.id);
       }, 0);
     },
+    onOpenWindowMenu: (item, anchor) => {
+      void showWindowMenu(item, anchor);
+    },
+    onCloseWindowMenu: () => {
+      void hideWindowMenu();
+    },
     onContentResize: ({ width, height }) => {
       stripContentSize = { width, height };
 
-      if (!contextMenu) {
-        resizeStripWindow(width, height);
+      if (contextMenu) {
+        return;
       }
+
+      if (
+        Math.abs(width - lastRequestedStripSize.width) < 1 &&
+        Math.abs(height - lastRequestedStripSize.height) < 1
+      ) {
+        return;
+      }
+
+      lastRequestedStripSize = { width, height };
+      resizeStripWindow(width, height);
     }
   });
+
+  // The hold menu lives in a separate native window. A click anywhere in the
+  // main Control Strip should dismiss that popup before handling the new action.
+  strip.addEventListener(
+    'pointerdown',
+    () => {
+      void hideWindowMenu();
+    },
+    { capture: true }
+  );
 
   // Window menu rows carry their owning app id. Selecting a minimized window
   // performs a real restore/focus action instead of only closing the menu.

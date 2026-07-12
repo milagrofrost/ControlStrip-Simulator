@@ -2,10 +2,18 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use std::{thread, time::Duration};
 
+use base64::{
+    engine::general_purpose::{STANDARD as BASE64_STANDARD, URL_SAFE_NO_PAD},
+    Engine as _,
+};
 use serde::{Deserialize, Serialize};
-use tauri::{Manager, PhysicalPosition, PhysicalSize};
+use tauri::{Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindowBuilder};
 use walkdir::WalkDir;
 
 const CONFIG_DIR: &str = ".local/share/control-strip";
@@ -17,6 +25,7 @@ const DEFAULT_SNAP_BACK_SECONDS: u64 = 10;
 const DEFAULT_SCREEN_CORNER_RADIUS: u32 = 18;
 const DEFAULT_SCREEN_CORNER_COLOR: &str = "#000000";
 const DEFAULT_SCREEN_CORNER_POSITION: &str = "bottom-left";
+const MAX_ICON_BYTES: u64 = 1_048_576;
 const DEFAULT_CONFIG: &str = r##"# ControlStrip Simulator config
 # Window placement is native Tauri window geometry in physical screen pixels.
 window:
@@ -217,7 +226,7 @@ struct ControlStripItem {
     error: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ControlStripWindow {
     id: String,
@@ -391,6 +400,170 @@ fn resolve_desktop_file(wm_class: String) -> Result<String, String> {
     Err(format!("No installed .desktop file matched WM_CLASS {wm_class}"))
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WindowMenuPayload {
+    app_id: String,
+    label: String,
+    windows: Vec<ControlStripWindow>,
+}
+
+#[tauri::command]
+fn show_window_menu(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    app_id: String,
+    label: String,
+    windows: Vec<ControlStripWindow>,
+    screen_left: f64,
+    screen_top: f64,
+    anchor_width: f64,
+) -> Result<(), String> {
+    if let Some(existing) = app.get_webview_window("window-menu") {
+        existing.close().map_err(|error| format!("Failed to close existing window menu: {error}"))?;
+    }
+
+    let payload = WindowMenuPayload {
+        app_id,
+        label,
+        windows,
+    };
+    let payload_json = serde_json::to_vec(&payload)
+        .map_err(|error| format!("Failed to encode window menu payload: {error}"))?;
+    let encoded_payload = URL_SAFE_NO_PAD.encode(payload_json);
+    let url = format!("index.html?windowMenu={encoded_payload}");
+
+    let scale = window
+        .scale_factor()
+        .map_err(|error| format!("Failed to read scale factor: {error}"))?;
+
+    let longest_title_chars = payload
+        .windows
+        .iter()
+        .map(|entry| entry.title.chars().count())
+        .max()
+        .unwrap_or_else(|| payload.label.chars().count());
+    let logical_width = ((longest_title_chars as f64 * 5.0) + 16.0)
+        .max(anchor_width)
+        .clamp(72.0, 300.0);
+    let logical_height = ((payload.windows.len().max(1) as f64) * 15.0) + 2.0;
+    let physical_width = (logical_width * scale).ceil().max(1.0) as u32;
+    let physical_height = (logical_height * scale).ceil().max(1.0) as u32;
+
+    // screen_left/screen_top are absolute CSS screen coordinates captured
+    // from the pointer event. Convert them once to native physical pixels.
+    let raw_x = (screen_left * scale).round() as i32;
+    let raw_y = (screen_top * scale).round() as i32 - physical_height as i32 + 1;
+    let mut x = raw_x;
+    let mut y = raw_y;
+
+    if let Some(monitor) = window.current_monitor().map_err(|error| error.to_string())? {
+        let monitor_position = monitor.position();
+        let monitor_size = monitor.size();
+        let max_x = monitor_position.x + monitor_size.width as i32 - physical_width as i32;
+        let max_y = monitor_position.y + monitor_size.height as i32 - physical_height as i32;
+        x = x.clamp(monitor_position.x, max_x.max(monitor_position.x));
+        y = y.clamp(monitor_position.y, max_y.max(monitor_position.y));
+    }
+
+    let menu = WebviewWindowBuilder::new(
+        &app,
+        "window-menu",
+        WebviewUrl::App(url.into()),
+    )
+    .title("Window menu")
+    .decorations(false)
+    .transparent(true)
+    .resizable(false)
+    .skip_taskbar(true)
+    .always_on_top(true)
+    .inner_size(logical_width, logical_height)
+    // Give GTK/X11 the intended logical position at window creation, then
+    // reinforce it after the native window has actually been mapped.
+    .position(x as f64 / scale, y as f64 / scale)
+    .visible(false)
+    .build()
+    .map_err(|error| format!("Failed to create window menu: {error}"))?;
+
+    // WebKit focus notifications are inconsistent for this small transparent
+    // popup on Raspberry Pi OS. Arm dismissal only after the native window has
+    // actually received focus, then close it on the next native focus loss.
+    let focus_dismiss_armed = Arc::new(AtomicBool::new(false));
+    let focus_dismiss_state = Arc::clone(&focus_dismiss_armed);
+    let focus_dismiss_menu = menu.clone();
+    menu.on_window_event(move |event| match event {
+        tauri::WindowEvent::Focused(true) => {
+            focus_dismiss_state.store(true, Ordering::Release);
+        }
+        tauri::WindowEvent::Focused(false)
+            if focus_dismiss_state.swap(false, Ordering::AcqRel) =>
+        {
+            if let Err(error) = focus_dismiss_menu.close() {
+                eprintln!("Control Strip: failed to close unfocused window menu: {error}");
+            }
+        }
+        _ => {}
+    });
+
+    // GTK/X11 may ignore geometry set before a transparent popup is mapped.
+    // Show it first, then reapply size and position twice after mapping; the
+    // second pass handles window managers that adjust placement after creation.
+    menu.show().map_err(|error| format!("Failed to show window menu: {error}"))?;
+
+    let positioned_menu = menu.clone();
+    std::thread::spawn(move || {
+        for delay_ms in [25_u64, 150_u64] {
+            std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+
+            if let Err(error) = positioned_menu.set_size(PhysicalSize::new(physical_width, physical_height)) {
+                eprintln!("Control Strip: failed to size mapped window menu: {error}");
+                return;
+            }
+            if let Err(error) = positioned_menu.set_position(PhysicalPosition::new(x, y)) {
+                eprintln!("Control Strip: failed to position mapped window menu: {error}");
+                return;
+            }
+
+            match (positioned_menu.outer_position(), positioned_menu.outer_size()) {
+                (Ok(position), Ok(size)) => eprintln!(
+                    "Control Strip: mapped window menu geometry position=({}, {}) size={}x{}",
+                    position.x,
+                    position.y,
+                    size.width,
+                    size.height
+                ),
+                (position, size) => eprintln!(
+                    "Control Strip: mapped window menu geometry unavailable position={position:?} size={size:?}"
+                ),
+            }
+        }
+
+        if let Err(error) = positioned_menu.set_focus() {
+            eprintln!("Control Strip: failed to focus mapped window menu: {error}");
+        }
+    });
+
+    Ok(())
+}
+
+#[tauri::command]
+fn select_window_menu_item(app: tauri::AppHandle, window_id: String) -> Result<(), String> {
+    if let Some(menu) = app.get_webview_window("window-menu") {
+        if let Err(error) = menu.close() {
+            eprintln!("Control Strip: could not close window menu before selection: {error}");
+        }
+    }
+    focus_window(&window_id)
+}
+
+#[tauri::command]
+fn hide_window_menu(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(menu) = app.get_webview_window("window-menu") {
+        menu.close().map_err(|error| format!("Failed to close window menu: {error}"))?;
+    }
+    Ok(())
+}
+
 #[tauri::command]
 fn focus_app_windows(app_id: String) -> Result<(), String> {
     let windows = current_running_windows()?;
@@ -475,6 +648,9 @@ pub fn run() {
             ignore_wm_class,
             resolve_desktop_file,
             focus_app_windows,
+            show_window_menu,
+            hide_window_menu,
+            select_window_menu_item,
             resize_strip_window
         ])
         .run(tauri::generate_context!())
@@ -973,19 +1149,71 @@ fn resolve_icon(icon: &str) -> Option<String> {
 
     let icon_path = expand_home(icon);
     if icon_path.is_absolute() {
-        return icon_path
-            .exists()
-            .then(|| icon_path.display().to_string());
+        return load_icon_data_url(&icon_path);
     }
 
     for path in icon_search_roots() {
         if let Some(icon_path) = find_icon_in_root(&path, icon) {
-            return Some(icon_path.display().to_string());
+            return load_icon_data_url(&icon_path);
         }
     }
 
     eprintln!("Control Strip: unresolved icon {}", icon);
     None
+}
+
+fn load_icon_data_url(path: &Path) -> Option<String> {
+    let metadata = match fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            eprintln!("Control Strip: could not read icon metadata for {}: {error}", path.display());
+            return None;
+        }
+    };
+
+    if !metadata.is_file() {
+        eprintln!("Control Strip: icon path is not a file: {}", path.display());
+        return None;
+    }
+
+    if metadata.len() > MAX_ICON_BYTES {
+        eprintln!(
+            "Control Strip: icon {} is too large ({} bytes; maximum {} bytes)",
+            path.display(),
+            metadata.len(),
+            MAX_ICON_BYTES
+        );
+        return None;
+    }
+
+    let mime_type = match path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| extension.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("png") => "image/png",
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("webp") => "image/webp",
+        Some("svg") => "image/svg+xml",
+        Some("xpm") => "image/x-xpixmap",
+        _ => {
+            eprintln!("Control Strip: unsupported icon type: {}", path.display());
+            return None;
+        }
+    };
+
+    match fs::read(path) {
+        Ok(bytes) => Some(format!(
+            "data:{mime_type};base64,{}",
+            BASE64_STANDARD.encode(bytes)
+        )),
+        Err(error) => {
+            eprintln!("Control Strip: could not read icon {}: {error}", path.display());
+            None
+        }
+    }
 }
 
 fn find_icon_in_root(root: &Path, icon: &str) -> Option<PathBuf> {

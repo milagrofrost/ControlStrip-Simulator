@@ -50,6 +50,7 @@
   background-repeat: no-repeat;
   background-position: 0 0;
   background-size: auto;
+  cursor: pointer;
 }
 
 .control-strip__pane.is-disabled {
@@ -58,15 +59,13 @@
 
 .control-strip__icon {
   position: absolute;
+  pointer-events: none;
+  user-select: none;
   left: 50%;
   top: 50%;
   display: grid;
-  width: 13px;
-  height: 13px;
   place-items: center;
   transform: translate(-50%, -50%);
-  border: 1px solid #111;
-  background: #fff;
   color: #111;
   font-family: Geneva, Arial, sans-serif;
   font-size: 8px;
@@ -74,10 +73,23 @@
   line-height: 1;
 }
 
+.control-strip__icon.has-text {
+  width: 13px;
+  height: 13px;
+  border: 1px solid #111;
+  background: rgb(255 255 255 / 50%);
+}
+
+.control-strip__icon.has-image {
+  width: 16px;
+  height: 16px;
+}
+
 .control-strip__icon-image {
   display: block;
-  max-width: 11px;
-  max-height: 11px;
+  width: 16px;
+  height: 16px;
+  object-fit: contain;
 }
 
 .control-strip__pane.is-open .control-strip__icon {
