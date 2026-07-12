@@ -450,10 +450,12 @@ fn show_window_menu(
     let physical_height = (logical_height * scale).ceil().max(1.0) as u32;
 
     let mut x = parent_position.x + (anchor_left * scale).round() as i32;
-    // The main native window is already shrink-wrapped to the Control Strip.
-    // Anchor the popup directly to its top edge with a 1 px overlap so there
-    // is no visible seam between the two windows.
-    let mut y = parent_position.y - physical_height as i32 + 1;
+    // Anchor to the pane's actual top edge inside the webview. The native
+    // window may include transparent space above the visible Control Strip.
+    let mut y = parent_position.y
+        + (anchor_top * scale).round() as i32
+        - physical_height as i32
+        + 1;
 
     if let Some(monitor) = window.current_monitor().map_err(|error| error.to_string())? {
         let monitor_position = monitor.position();
