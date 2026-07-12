@@ -72,7 +72,6 @@ export type ControlStripOptions = {
   onLaunchPinnedApp?: (item: ControlStripItem) => void;
   onFocusAppWindows?: (item: ControlStripItem) => void;
   onOpenWindowMenu?: (item: ControlStripItem, anchor: { screenLeft: number; screenTop: number; width: number }) => void;
-  onCloseWindowMenu?: () => void;
   onContentResize?: (size: { width: number; height: number }) => void;
   sizing?: ControlStripSizingOptions;
   screenCorner?: ScreenCornerOptions;
@@ -101,23 +100,15 @@ export type ParsedDesktopFile = {
 
 export type PressedPart = null | 'head' | 'tail' | 'left' | 'right' | `pane:${string}`;
 
-type OpenWindowMenu = {
-  itemId: string;
-  anchorRect: {
-    left: number;
-    top: number;
-    width: number;
-    bottom: number;
-    right: number;
-    // Viewport height captured with the rect, so the menu can be anchored to the
-    // strip's distance-from-bottom and stay put when the window is resized.
-    viewportHeight: number;
-    screenLeft: number;
-    screenTop: number;
-  };
+type AnchorRect = {
+  left: number;
+  top: number;
+  width: number;
+  bottom: number;
+  right: number;
+  screenLeft: number;
+  screenTop: number;
 };
-
-type AnchorRect = OpenWindowMenu['anchorRect'];
 
 type ActivePanePress = {
   item: ControlStripItem;
@@ -168,7 +159,6 @@ export function createControlStrip(
   let activePanePress: ActivePanePress | null = null;
   let longPressTimer: number | null = null;
   let longPressTriggered = false;
-  let openWindowMenu: OpenWindowMenu | null = null;
   let snapBackTimer: number | null = null;
   let contentResizeFrame: number | null = null;
   const paneActivationLocks = new Set<string>();
@@ -185,14 +175,11 @@ export function createControlStrip(
 
   const screenCorner = createScreenCorner(options.screenCorner);
 
-  const menuLayer = document.createElement('div');
-  menuLayer.className = 'control-strip__menu-layer';
-
   const emptyMessage = document.createElement('div');
   emptyMessage.className = 'control-strip__empty-message';
   emptyMessage.textContent = 'No pinned apps';
 
-  strip.append(track, screenCorner, emptyMessage, menuLayer, createAssetPreload());
+  strip.append(track, screenCorner, emptyMessage, createAssetPreload());
 
   const updatePressedVisuals = (): void => {
     const canScrollLeft = !isCollapsed && visibleStart > 0;
@@ -291,16 +278,6 @@ export function createControlStrip(
 
     clickFeedbackTimers.set(item.id, timers);
     return true;
-  };
-
-  const closeWindowMenu = (): void => {
-    options.onCloseWindowMenu?.();
-    if (!openWindowMenu) {
-      return;
-    }
-
-    openWindowMenu = null;
-    renderMenu();
   };
 
   const clearLongPressTimer = (): void => {
@@ -556,31 +533,6 @@ export function createControlStrip(
     { signal: eventController.signal }
   );
   window.addEventListener(
-    'pointerdown',
-    (event) => {
-      if (!openWindowMenu) {
-        return;
-      }
-
-      const target = event.target;
-      if (target instanceof Node && menuLayer.contains(target)) {
-        return;
-      }
-
-      closeWindowMenu();
-    },
-    { signal: eventController.signal }
-  );
-  window.addEventListener(
-    'keydown',
-    (event) => {
-      if (event.key === 'Escape') {
-        closeWindowMenu();
-      }
-    },
-    { signal: eventController.signal }
-  );
-  window.addEventListener(
     'beforeunload',
     () => {
       clearLongPressTimer();
@@ -588,8 +540,8 @@ export function createControlStrip(
     { signal: eventController.signal }
   );
 
-  // Measure the union footprint of everything actually drawn (strip, empty-state
-  // message, open window menu) so the host window can be shrunk to hug it. The strip
+  // Measure the union footprint of everything actually drawn (strip and empty-state
+  // message) so the host window can be shrunk to hug it. The strip
   // is bottom-left anchored, so height is measured up from the viewport bottom, which
   // is invariant to the window height we are about to set (no feedback loop).
   const measureContent = (): { width: number; height: number } | null => {
@@ -601,11 +553,6 @@ export function createControlStrip(
     if (!emptyMessage.hidden) {
       rects.push(emptyMessage.getBoundingClientRect());
     }
-    const menu = menuLayer.querySelector('.control-strip__window-menu');
-    if (menu) {
-      rects.push(menu.getBoundingClientRect());
-    }
-
     if (rects.length === 0) {
       return null;
     }
@@ -739,23 +686,7 @@ export function createControlStrip(
           screenTop: anchorRect.screenTop,
           width: anchorRect.width
         });
-        return;
       }
-
-      openWindowMenu = {
-        itemId: item.id,
-        anchorRect: {
-          left: anchorRect.left,
-          top: anchorRect.top,
-          width: anchorRect.width,
-          bottom: anchorRect.bottom,
-          right: anchorRect.right,
-          viewportHeight: anchorRect.viewportHeight,
-          screenLeft: anchorRect.screenLeft,
-          screenTop: anchorRect.screenTop
-        }
-      };
-      renderMenu();
     }, longPressDelayMs);
   };
 
@@ -783,7 +714,6 @@ export function createControlStrip(
         width: rect.width,
         bottom: rect.bottom,
         right: rect.right,
-        viewportHeight: window.innerHeight,
         screenLeft: screenOriginX + rect.left,
         screenTop: screenOriginY + rect.top
       };
@@ -826,25 +756,6 @@ export function createControlStrip(
     clearPressedPart();
   };
 
-  const renderMenu = (): void => {
-    if (!openWindowMenu) {
-      menuLayer.replaceChildren();
-      scheduleContentResize();
-      return;
-    }
-
-    const item = items.find((candidate) => candidate.id === openWindowMenu?.itemId);
-    if (!item) {
-      menuLayer.replaceChildren();
-      scheduleContentResize();
-      return;
-    }
-
-    const menu = createWindowMenu(item, openWindowMenu, closeWindowMenu);
-    menuLayer.replaceChildren(menu);
-    scheduleContentResize();
-  };
-
   strip.setItems = (nextItems: ControlStripItem[]): void => {
     const previousItemCount = items.length;
     const wasAtRightEdge = visibleStart + visibleCount >= previousItemCount;
@@ -862,15 +773,7 @@ export function createControlStrip(
         : visibleStart
     );
 
-    const menuItem = openWindowMenu
-      ? items.find((item) => item.id === openWindowMenu?.itemId)
-      : null;
-    if (openWindowMenu && (!menuItem || !hasSelectableWindows(menuItem))) {
-      openWindowMenu = null;
-    }
-
     render();
-    renderMenu();
   };
 
   render();
@@ -1010,43 +913,6 @@ function activatePane(item: ControlStripItem, options: ControlStripOptions): voi
   }
 
   console.log(`Control Strip: would launch app ${item.id} (${item.label})`);
-}
-
-function createWindowMenu(
-  item: ControlStripItem,
-  openWindowMenu: OpenWindowMenu,
-  closeWindowMenu: () => void
-): HTMLElement {
-  const menu = document.createElement('div');
-  menu.className = 'control-strip__window-menu';
-  // Anchor to the pane's distance from the viewport bottom (invariant when the
-  // window is resized to hug content) and grow upward from there.
-  const bottomOffset = openWindowMenu.anchorRect.viewportHeight - openWindowMenu.anchorRect.top + 3;
-  menu.style.left = `${openWindowMenu.anchorRect.left}px`;
-  menu.style.bottom = `${bottomOffset}px`;
-  menu.style.minWidth = `${openWindowMenu.anchorRect.width}px`;
-  menu.setAttribute('role', 'menu');
-  menu.setAttribute('aria-label', `${item.label} windows`);
-
-  for (const windowItem of item.windows ?? []) {
-    const row = document.createElement('button');
-    row.className = ['control-strip__window-menu-row', windowItem.isActive && 'is-active']
-      .filter(Boolean)
-      .join(' ');
-    row.type = 'button';
-    row.textContent = windowItem.title;
-    row.dataset.appId = item.id;
-    row.dataset.windowId = windowItem.id;
-    row.addEventListener('click', () => {
-      console.log(
-        `Control Strip: would select window ${windowItem.id} (${windowItem.title}) for app ${item.id}`
-      );
-      closeWindowMenu();
-    });
-    menu.append(row);
-  }
-
-  return menu;
 }
 
 function getPaneAsset(item: ControlStripItem, isPressed: boolean): string {

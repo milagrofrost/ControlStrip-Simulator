@@ -58,9 +58,6 @@ async function bootstrap(): Promise<void> {
     onOpenWindowMenu: (item, anchor) => {
       void showWindowMenu(item, anchor);
     },
-    onCloseWindowMenu: () => {
-      void hideWindowMenu();
-    },
     onContentResize: ({ width, height }) => {
       stripContentSize = { width, height };
 
@@ -89,25 +86,6 @@ async function bootstrap(): Promise<void> {
     },
     { capture: true }
   );
-
-  // Window menu rows carry their owning app id. Selecting a minimized window
-  // performs a real restore/focus action instead of only closing the menu.
-  strip.addEventListener('click', (event) => {
-    const target = event.target;
-    if (!(target instanceof Element)) {
-      return;
-    }
-
-    const menuRow = target.closest<HTMLButtonElement>('.control-strip__window-menu-row');
-    const appId = menuRow?.dataset.appId;
-    if (!appId) {
-      return;
-    }
-
-    window.setTimeout(() => {
-      void focusAppWindows(appId);
-    }, 0);
-  });
 
   const closeContextMenu = (): void => {
     contextMenu?.remove();
