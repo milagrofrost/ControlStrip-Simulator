@@ -2,6 +2,7 @@ import './style.css';
 import { createControlStrip } from './ControlStrip';
 import { bootstrapWindowMenu } from './windowMenu';
 import type { ControlStripItem } from './ControlStrip';
+import { enrichTransientAppIcons } from './transientAppIcons';
 import {
   applyRunningWindowsToItems,
   focusAppWindows,
@@ -39,6 +40,7 @@ async function bootstrap(): Promise<void> {
   let contextMenu: HTMLDivElement | null = null;
   let stripContentSize = { width: 1, height: 24 };
   let lastRequestedStripSize = { width: 0, height: 0 };
+  let runningWindowGeneration = 0;
 
   const strip = createControlStrip(items, {
     sizing: model.strip,
@@ -117,6 +119,7 @@ async function bootstrap(): Promise<void> {
   const refreshItems = async (): Promise<void> => {
     const refreshed = await loadControlStripModel();
     items = applyRunningWindowsToItems(refreshed.items, latestRunningWindows);
+    items = await enrichTransientAppIcons(items);
     strip.setItems(items);
   };
 
@@ -250,9 +253,23 @@ async function bootstrap(): Promise<void> {
 
   const stopPolling = startRunningWindowPolling((runningWindows) => {
     latestRunningWindows = runningWindows;
+    const generation = ++runningWindowGeneration;
     const detectedItems = applyRunningWindowsToItems(items, runningWindows);
-    items = keepStableItemOrder(items, detectedItems);
+    const stableItems = keepStableItemOrder(items, detectedItems);
+
+    // Render immediately with the normal text fallback, then replace temporary
+    // panes as their bounded, cached desktop-icon lookup completes.
+    items = stableItems;
     strip.setItems(items);
+
+    void enrichTransientAppIcons(stableItems).then((enrichedItems) => {
+      if (generation !== runningWindowGeneration) {
+        return;
+      }
+
+      items = keepStableItemOrder(items, enrichedItems);
+      strip.setItems(items);
+    });
   });
   const removeStrip = strip.remove.bind(strip);
 
