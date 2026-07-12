@@ -36,7 +36,10 @@
   border: 0;
   background: transparent;
   color: #111;
-  font: 8px/13px Geneva, Arial, sans-serif;
+  font:
+    8px/13px Geneva,
+    Arial,
+    sans-serif;
   text-align: left;
   text-overflow: ellipsis;
   white-space: nowrap;

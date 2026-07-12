@@ -10,11 +10,15 @@ export interface WindowMenuPayload {
   windows: WindowMenuEntry[];
 }
 
-export function decodeWindowMenuPayload(encoded: string): WindowMenuPayload | null {
+export function decodeWindowMenuPayload(
+  encoded: string
+): WindowMenuPayload | null {
   try {
     const normalized = encoded.replace(/-/g, '+').replace(/_/g, '/');
     const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=');
-    const bytes = Uint8Array.from(atob(padded), (character) => character.charCodeAt(0));
+    const bytes = Uint8Array.from(atob(padded), (character) =>
+      character.charCodeAt(0)
+    );
     const decoded = JSON.parse(new TextDecoder().decode(bytes));
     return validateWindowMenuPayload(decoded);
   } catch {
@@ -22,7 +26,9 @@ export function decodeWindowMenuPayload(encoded: string): WindowMenuPayload | nu
   }
 }
 
-export function validateWindowMenuPayload(value: unknown): WindowMenuPayload | null {
+export function validateWindowMenuPayload(
+  value: unknown
+): WindowMenuPayload | null {
   if (!isRecord(value)) {
     return null;
   }
@@ -40,10 +46,16 @@ export function validateWindowMenuPayload(value: unknown): WindowMenuPayload | n
     if (!isRecord(windowItem)) {
       return null;
     }
-    if (typeof windowItem.id !== 'string' || typeof windowItem.title !== 'string') {
+    if (
+      typeof windowItem.id !== 'string' ||
+      typeof windowItem.title !== 'string'
+    ) {
       return null;
     }
-    if (windowItem.isActive !== undefined && typeof windowItem.isActive !== 'boolean') {
+    if (
+      windowItem.isActive !== undefined &&
+      typeof windowItem.isActive !== 'boolean'
+    ) {
       return null;
     }
 

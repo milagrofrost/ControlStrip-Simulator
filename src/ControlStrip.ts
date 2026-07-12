@@ -71,7 +71,10 @@ export type ScreenCornerOptions = {
 export type ControlStripOptions = {
   onLaunchPinnedApp?: (item: ControlStripItem) => void;
   onFocusAppWindows?: (item: ControlStripItem) => void;
-  onOpenWindowMenu?: (item: ControlStripItem, anchor: { screenLeft: number; screenTop: number; width: number }) => void;
+  onOpenWindowMenu?: (
+    item: ControlStripItem,
+    anchor: { screenLeft: number; screenTop: number; width: number }
+  ) => void;
   onContentResize?: (size: { width: number; height: number }) => void;
   sizing?: ControlStripSizingOptions;
   screenCorner?: ScreenCornerOptions;
@@ -98,7 +101,8 @@ export type ParsedDesktopFile = {
   comment?: string;
 };
 
-export type PressedPart = null | 'head' | 'tail' | 'left' | 'right' | `pane:${string}`;
+export type PressedPart =
+  null | 'head' | 'tail' | 'left' | 'right' | `pane:${string}`;
 
 type AnchorRect = {
   left: number;
@@ -147,12 +151,19 @@ export function createControlStrip(
   options: ControlStripOptions = {}
 ): ControlStripElement {
   let items = [...initialItems];
-  const configuredVisibleCount = normalizeConfiguredVisibleCount(options.sizing?.visibleIcons);
-  const snapBackDelayMs = normalizeSnapBackDelayMs(options.sizing?.snapBackSeconds);
+  const configuredVisibleCount = normalizeConfiguredVisibleCount(
+    options.sizing?.visibleIcons
+  );
+  const snapBackDelayMs = normalizeSnapBackDelayMs(
+    options.sizing?.snapBackSeconds
+  );
   let pressedPart: PressedPart = null;
   // visibleStart is the first item index in view; visibleCount is the pane window size.
   let visibleStart = initialVisibleStart;
-  let visibleCount = getDesiredVisibleCount(items.length, configuredVisibleCount);
+  let visibleCount = getDesiredVisibleCount(
+    items.length,
+    configuredVisibleCount
+  );
   let isCollapsed = false;
   // Tail dragging compares horizontal pointer movement to one measured pane width.
   let resizeState: ResizeState | null = null;
@@ -184,30 +195,40 @@ export function createControlStrip(
   const updatePressedVisuals = (): void => {
     const canScrollLeft = !isCollapsed && visibleStart > 0;
     const canScrollRight =
-      !isCollapsed && visibleCount > 0 && visibleStart + visibleCount < items.length;
+      !isCollapsed &&
+      visibleCount > 0 &&
+      visibleStart + visibleCount < items.length;
 
-    for (const element of track.querySelectorAll<HTMLElement>('[data-pressed-part]')) {
+    for (const element of track.querySelectorAll<HTMLElement>(
+      '[data-pressed-part]'
+    )) {
       const part = element.dataset.pressedPart as PressedPart;
 
       if (element instanceof HTMLImageElement) {
         if (part === 'head') {
-          element.src = pressedPart === 'head' ? CONTROL_STRIP_ASSETS.headHold : CONTROL_STRIP_ASSETS.head;
+          element.src =
+            pressedPart === 'head'
+              ? CONTROL_STRIP_ASSETS.headHold
+              : CONTROL_STRIP_ASSETS.head;
         } else if (part === 'tail') {
-          element.src = pressedPart === 'tail' || resizeState
-            ? CONTROL_STRIP_ASSETS.tailHold
-            : CONTROL_STRIP_ASSETS.tail;
+          element.src =
+            pressedPart === 'tail' || resizeState
+              ? CONTROL_STRIP_ASSETS.tailHold
+              : CONTROL_STRIP_ASSETS.tail;
         } else if (part === 'left') {
-          element.src = canScrollLeft && pressedPart === 'left'
-            ? CONTROL_STRIP_ASSETS.activeLeftHold
-            : canScrollLeft
-              ? CONTROL_STRIP_ASSETS.activeLeft
-              : CONTROL_STRIP_ASSETS.inactiveLeft;
+          element.src =
+            canScrollLeft && pressedPart === 'left'
+              ? CONTROL_STRIP_ASSETS.activeLeftHold
+              : canScrollLeft
+                ? CONTROL_STRIP_ASSETS.activeLeft
+                : CONTROL_STRIP_ASSETS.inactiveLeft;
         } else if (part === 'right') {
-          element.src = canScrollRight && pressedPart === 'right'
-            ? CONTROL_STRIP_ASSETS.activeRightHold
-            : canScrollRight
-              ? CONTROL_STRIP_ASSETS.activeRight
-              : CONTROL_STRIP_ASSETS.inactiveRight;
+          element.src =
+            canScrollRight && pressedPart === 'right'
+              ? CONTROL_STRIP_ASSETS.activeRightHold
+              : canScrollRight
+                ? CONTROL_STRIP_ASSETS.activeRight
+                : CONTROL_STRIP_ASSETS.inactiveRight;
         }
         continue;
       }
@@ -216,7 +237,8 @@ export function createControlStrip(
         const itemId = part.slice('pane:'.length);
         const item = items.find((candidate) => candidate.id === itemId);
         if (!item) continue;
-        const isPressed = pressedPart === part || clickFeedbackPressedItems.has(itemId);
+        const isPressed =
+          pressedPart === part || clickFeedbackPressedItems.has(itemId);
         element.classList.toggle('is-pressed', isPressed);
         element.style.backgroundImage = `url("${getPaneAsset(item, isPressed)}")`;
       }
@@ -318,11 +340,17 @@ export function createControlStrip(
   const scheduleSnapBack = (): void => {
     clearSnapBackTimer();
 
-    if (configuredVisibleCount === null || visibleCount === getDesiredVisiblePaneCount()) {
+    if (
+      configuredVisibleCount === null ||
+      visibleCount === getDesiredVisiblePaneCount()
+    ) {
       return;
     }
 
-    snapBackTimer = window.setTimeout(snapBackToDesiredVisibleCount, snapBackDelayMs);
+    snapBackTimer = window.setTimeout(
+      snapBackToDesiredVisibleCount,
+      snapBackDelayMs
+    );
   };
 
   const clearActivePanePress = (): void => {
@@ -389,7 +417,9 @@ export function createControlStrip(
 
     const dragDistance = event.clientX - resizeState.startX;
     const nextVisibleCount = clampVisibleCount(
-      Math.round(resizeState.startVisibleCount + dragDistance / resizeState.paneWidth)
+      Math.round(
+        resizeState.startVisibleCount + dragDistance / resizeState.paneWidth
+      )
     );
 
     if (nextVisibleCount === visibleCount) {
@@ -588,7 +618,10 @@ export function createControlStrip(
   const render = (): void => {
     const visibleItems = items.slice(visibleStart, visibleStart + visibleCount);
     const canScrollLeft = !isCollapsed && visibleStart > 0;
-    const canScrollRight = !isCollapsed && visibleCount > 0 && visibleStart + visibleCount < items.length;
+    const canScrollRight =
+      !isCollapsed &&
+      visibleCount > 0 &&
+      visibleStart + visibleCount < items.length;
     const shouldRenderScrollControls = !isCollapsed;
 
     emptyMessage.hidden = items.length > 0;
@@ -596,7 +629,10 @@ export function createControlStrip(
     const trackParts: HTMLElement[] = [
       createImagePart(
         {
-          src: pressedPart === 'head' ? CONTROL_STRIP_ASSETS.headHold : CONTROL_STRIP_ASSETS.head,
+          src:
+            pressedPart === 'head'
+              ? CONTROL_STRIP_ASSETS.headHold
+              : CONTROL_STRIP_ASSETS.head,
           alt: 'Control Strip head',
           pressedPart: 'head',
           isPressable: true
@@ -609,37 +645,37 @@ export function createControlStrip(
     if (shouldRenderScrollControls) {
       trackParts.push(
         createImagePart(
-        {
-          src:
-            canScrollLeft && pressedPart === 'left'
-              ? CONTROL_STRIP_ASSETS.activeLeftHold
-              : canScrollLeft
-                ? CONTROL_STRIP_ASSETS.activeLeft
-                : CONTROL_STRIP_ASSETS.inactiveLeft,
-          alt: canScrollLeft ? 'Scroll left' : 'Scroll left unavailable',
-          pressedPart: 'left',
-          isPressable: canScrollLeft
-        },
-        setPressedPart,
-        clearPressedPart
-      ),
+          {
+            src:
+              canScrollLeft && pressedPart === 'left'
+                ? CONTROL_STRIP_ASSETS.activeLeftHold
+                : canScrollLeft
+                  ? CONTROL_STRIP_ASSETS.activeLeft
+                  : CONTROL_STRIP_ASSETS.inactiveLeft,
+            alt: canScrollLeft ? 'Scroll left' : 'Scroll left unavailable',
+            pressedPart: 'left',
+            isPressable: canScrollLeft
+          },
+          setPressedPart,
+          clearPressedPart
+        ),
         ...visibleItems.map((item) =>
           createPane(item, pressedPart, attachPaneHandlers)
         ),
         createImagePart(
-        {
-          src:
-            canScrollRight && pressedPart === 'right'
-              ? CONTROL_STRIP_ASSETS.activeRightHold
-              : canScrollRight
-                ? CONTROL_STRIP_ASSETS.activeRight
-                : CONTROL_STRIP_ASSETS.inactiveRight,
-          alt: canScrollRight ? 'Scroll right' : 'Scroll right unavailable',
-          pressedPart: 'right',
-          isPressable: canScrollRight
-        },
-        setPressedPart,
-        clearPressedPart
+          {
+            src:
+              canScrollRight && pressedPart === 'right'
+                ? CONTROL_STRIP_ASSETS.activeRightHold
+                : canScrollRight
+                  ? CONTROL_STRIP_ASSETS.activeRight
+                  : CONTROL_STRIP_ASSETS.inactiveRight,
+            alt: canScrollRight ? 'Scroll right' : 'Scroll right unavailable',
+            pressedPart: 'right',
+            isPressable: canScrollRight
+          },
+          setPressedPart,
+          clearPressedPart
         )
       );
     }
@@ -667,14 +703,21 @@ export function createControlStrip(
     scheduleContentResize();
   };
 
-  const beginPaneLongPress = (item: ControlStripItem, anchorRect: AnchorRect): void => {
+  const beginPaneLongPress = (
+    item: ControlStripItem,
+    anchorRect: AnchorRect
+  ): void => {
     clearLongPressTimer();
     longPressTriggered = false;
 
     longPressTimer = window.setTimeout(() => {
       longPressTimer = null;
 
-      if (!activePanePress || activePanePress.item.id !== item.id || !hasSelectableWindows(item)) {
+      if (
+        !activePanePress ||
+        activePanePress.item.id !== item.id ||
+        !hasSelectableWindows(item)
+      ) {
         return;
       }
 
@@ -737,7 +780,11 @@ export function createControlStrip(
   };
 
   const cancelPanePressIfPointerLeftAnchor = (event: PointerEvent): void => {
-    if (!activePanePress || longPressTriggered || event.pointerId !== activePanePress.pointerId) {
+    if (
+      !activePanePress ||
+      longPressTriggered ||
+      event.pointerId !== activePanePress.pointerId
+    ) {
       return;
     }
 
@@ -763,10 +810,10 @@ export function createControlStrip(
     visibleCount = isCollapsed
       ? 0
       : configuredVisibleCount === null
-      ? getDesiredVisiblePaneCount()
-      : visibleCount === 0 && items.length > 0
         ? getDesiredVisiblePaneCount()
-        : clampVisibleCount(visibleCount);
+        : visibleCount === 0 && items.length > 0
+          ? getDesiredVisiblePaneCount()
+          : clampVisibleCount(visibleCount);
     visibleStart = clampVisibleStart(
       wasAtRightEdge && items.length > previousItemCount
         ? items.length - visibleCount
@@ -801,7 +848,11 @@ function createImagePart(
   clearPressedPart: () => void
 ): HTMLImageElement {
   const image = document.createElement('img');
-  image.className = ['control-strip__part', 'control-strip__image-part', part.className]
+  image.className = [
+    'control-strip__part',
+    'control-strip__image-part',
+    part.className
+  ]
     .filter(Boolean)
     .join(' ');
   image.src = part.src;
@@ -823,7 +874,9 @@ function createImagePart(
   return image;
 }
 
-function createScreenCorner(options: ScreenCornerOptions | undefined): HTMLElement {
+function createScreenCorner(
+  options: ScreenCornerOptions | undefined
+): HTMLElement {
   const corner = document.createElement('div');
   const enabled = options?.enabled ?? true;
   const position = options?.position ?? 'bottom-left';
@@ -839,7 +892,9 @@ function createScreenCorner(options: ScreenCornerOptions | undefined): HTMLEleme
   return corner;
 }
 
-function normalizeScreenCornerRadius(radius: number | null | undefined): number {
+function normalizeScreenCornerRadius(
+  radius: number | null | undefined
+): number {
   if (typeof radius !== 'number' || !Number.isFinite(radius)) {
     return 18;
   }
@@ -872,7 +927,10 @@ function createPane(
   pane.dataset.itemId = item.id;
   pane.dataset.pressedPart = panePressedPart;
   pane.setAttribute('role', 'img');
-  pane.setAttribute('aria-label', item.error ? `${item.label}: ${item.error}` : item.label);
+  pane.setAttribute(
+    'aria-label',
+    item.error ? `${item.label}: ${item.error}` : item.label
+  );
 
   if (!item.disabled) {
     attachPaneHandlers(pane, item, panePressedPart);
@@ -896,9 +954,14 @@ function createPane(
   return pane;
 }
 
-function activatePane(item: ControlStripItem, options: ControlStripOptions): void {
+function activatePane(
+  item: ControlStripItem,
+  options: ControlStripOptions
+): void {
   if (item.disabled) {
-    console.log(`Control Strip: pinned app ${item.id} is disabled: ${item.error ?? 'unknown error'}`);
+    console.log(
+      `Control Strip: pinned app ${item.id} is disabled: ${item.error ?? 'unknown error'}`
+    );
     return;
   }
 
@@ -918,7 +981,9 @@ function activatePane(item: ControlStripItem, options: ControlStripOptions): voi
 function getPaneAsset(item: ControlStripItem, isPressed: boolean): string {
   // Only items with selectable windows use pane_arrow.png to reserve arrow space.
   if (hasSelectableWindows(item)) {
-    return isPressed ? CONTROL_STRIP_ASSETS.paneArrowHold : CONTROL_STRIP_ASSETS.paneArrow;
+    return isPressed
+      ? CONTROL_STRIP_ASSETS.paneArrowHold
+      : CONTROL_STRIP_ASSETS.paneArrow;
   }
 
   return isPressed ? CONTROL_STRIP_ASSETS.paneHold : CONTROL_STRIP_ASSETS.pane;
@@ -964,8 +1029,14 @@ function getPaneWidth(track: HTMLElement): number {
   return pane?.getBoundingClientRect().width || defaultPaneWidth;
 }
 
-export function normalizeConfiguredVisibleCount(visibleIcons: number | null | undefined): number | null {
-  if (visibleIcons === null || visibleIcons === undefined || !Number.isFinite(visibleIcons)) {
+export function normalizeConfiguredVisibleCount(
+  visibleIcons: number | null | undefined
+): number | null {
+  if (
+    visibleIcons === null ||
+    visibleIcons === undefined ||
+    !Number.isFinite(visibleIcons)
+  ) {
     return null;
   }
 
@@ -973,7 +1044,9 @@ export function normalizeConfiguredVisibleCount(visibleIcons: number | null | un
   return normalized > 0 ? normalized : null;
 }
 
-export function normalizeSnapBackDelayMs(snapBackSeconds: number | undefined): number {
+export function normalizeSnapBackDelayMs(
+  snapBackSeconds: number | undefined
+): number {
   if (snapBackSeconds === undefined || !Number.isFinite(snapBackSeconds)) {
     return defaultSnapBackDelayMs;
   }
@@ -981,7 +1054,10 @@ export function normalizeSnapBackDelayMs(snapBackSeconds: number | undefined): n
   return Math.max(0, snapBackSeconds * 1000);
 }
 
-export function getDesiredVisibleCount(itemCount: number, configuredVisibleCount: number | null): number {
+export function getDesiredVisibleCount(
+  itemCount: number,
+  configuredVisibleCount: number | null
+): number {
   if (itemCount === 0) {
     return 0;
   }

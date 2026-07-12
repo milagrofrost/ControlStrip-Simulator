@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
-import { decodeWindowMenuPayload, validateWindowMenuPayload } from './windowMenuPayload';
+import {
+  decodeWindowMenuPayload,
+  validateWindowMenuPayload
+} from './windowMenuPayload';
 
 function encodePayload(value: unknown): string {
   const json = JSON.stringify(value);
@@ -9,7 +12,10 @@ function encodePayload(value: unknown): string {
   for (const byte of bytes) {
     binary += String.fromCharCode(byte);
   }
-  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+  return btoa(binary)
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/g, '');
 }
 
 describe('window menu payload validation', () => {
@@ -29,10 +35,26 @@ describe('window menu payload validation', () => {
 
   it('rejects malformed payloads', () => {
     expect(validateWindowMenuPayload(null)).toBeNull();
-    expect(validateWindowMenuPayload({ appId: 1, label: 'VLC', windows: [] })).toBeNull();
-    expect(validateWindowMenuPayload({ appId: 'vlc', label: 'VLC' })).toBeNull();
-    expect(validateWindowMenuPayload({ appId: 'vlc', label: 'VLC', windows: [{ id: '0x1' }] })).toBeNull();
-    expect(validateWindowMenuPayload({ appId: 'vlc', label: 'VLC', windows: [{ id: '0x1', title: 'VLC', isActive: 'yes' }] })).toBeNull();
+    expect(
+      validateWindowMenuPayload({ appId: 1, label: 'VLC', windows: [] })
+    ).toBeNull();
+    expect(
+      validateWindowMenuPayload({ appId: 'vlc', label: 'VLC' })
+    ).toBeNull();
+    expect(
+      validateWindowMenuPayload({
+        appId: 'vlc',
+        label: 'VLC',
+        windows: [{ id: '0x1' }]
+      })
+    ).toBeNull();
+    expect(
+      validateWindowMenuPayload({
+        appId: 'vlc',
+        label: 'VLC',
+        windows: [{ id: '0x1', title: 'VLC', isActive: 'yes' }]
+      })
+    ).toBeNull();
     expect(decodeWindowMenuPayload('not valid base64')).toBeNull();
   });
 });

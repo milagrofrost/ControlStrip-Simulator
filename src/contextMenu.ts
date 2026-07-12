@@ -64,7 +64,9 @@ export function createContextMenuController(
     if (!(target instanceof Element)) return;
 
     const pane = target.closest<HTMLElement>('.control-strip__pane');
-    const item = options.getItems().find((candidate) => candidate.id === pane?.dataset.itemId);
+    const item = options
+      .getItems()
+      .find((candidate) => candidate.id === pane?.dataset.itemId);
     if (!pane || !item) return;
 
     event.preventDefault();
@@ -74,7 +76,11 @@ export function createContextMenuController(
   };
 
   const handlePointerDown = (event: PointerEvent): void => {
-    if (contextMenu && event.target instanceof Node && !contextMenu.contains(event.target)) {
+    if (
+      contextMenu &&
+      event.target instanceof Node &&
+      !contextMenu.contains(event.target)
+    ) {
       close();
     }
   };
@@ -105,7 +111,10 @@ export function calculateContextMenuPosition({
 }: ContextMenuPositionInput): ContextMenuPosition {
   const maxLeft = Math.max(margin, viewportWidth - menuWidth - margin);
   const left = Math.min(Math.max(pointerX, margin), maxLeft);
-  const top = Math.max(margin, viewportHeight - stripHeight - menuHeight - pointerGap);
+  const top = Math.max(
+    margin,
+    viewportHeight - stripHeight - menuHeight - pointerGap
+  );
 
   return {
     left,
@@ -137,7 +146,8 @@ async function openContextMenu(
       const desktopFile = item.isPinned
         ? item.desktopFile
         : await resolveDesktopFile(wmClass);
-      if (!desktopFile) throw new Error(`No desktop file is available for ${item.label}`);
+      if (!desktopFile)
+        throw new Error(`No desktop file is available for ${item.label}`);
       await setAppPinned(desktopFile, !item.isPinned, wmClass);
       await options.refreshItems();
     } catch (error) {
@@ -150,7 +160,8 @@ async function openContextMenu(
 
   const ignoreAction = document.createElement('button');
   ignoreAction.type = 'button';
-  ignoreAction.className = 'control-strip-context-menu__button control-strip-context-menu__button--separated';
+  ignoreAction.className =
+    'control-strip-context-menu__button control-strip-context-menu__button--separated';
   ignoreAction.textContent = 'Ignore from Strip';
   ignoreAction.disabled = !wmClass;
   ignoreAction.addEventListener('click', async () => {
@@ -160,7 +171,8 @@ async function openContextMenu(
       await ignoreWmClass(wmClass);
       options.setLatestRunningWindows(
         options.getLatestRunningWindows().filter((windowItem) => {
-          const candidate = windowItem.wm_class.trim() || windowItem.wm_class_instance.trim();
+          const candidate =
+            windowItem.wm_class.trim() || windowItem.wm_class_instance.trim();
           return candidate.toLowerCase() !== wmClass.toLowerCase();
         })
       );

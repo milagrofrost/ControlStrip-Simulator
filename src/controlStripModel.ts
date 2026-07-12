@@ -73,7 +73,9 @@ export async function loadControlStripModel(): Promise<ControlStripModel> {
   }
 
   try {
-    const model = await invoke<BackendControlStripModel>('get_control_strip_model');
+    const model = await invoke<BackendControlStripModel>(
+      'get_control_strip_model'
+    );
     return {
       items: model.items.map(normalizeBackendItem),
       strip: {
@@ -104,7 +106,9 @@ function defaultScreenCornerConfig(): ScreenCornerConfig {
   };
 }
 
-function normalizeScreenCornerConfig(config?: BackendScreenCornerConfig): ScreenCornerConfig {
+function normalizeScreenCornerConfig(
+  config?: BackendScreenCornerConfig
+): ScreenCornerConfig {
   const defaults = defaultScreenCornerConfig();
 
   return {
@@ -115,7 +119,10 @@ function normalizeScreenCornerConfig(config?: BackendScreenCornerConfig): Screen
   };
 }
 
-function normalizeScreenCornerRadius(radius: number | null | undefined, fallback: number): number {
+function normalizeScreenCornerRadius(
+  radius: number | null | undefined,
+  fallback: number
+): number {
   if (typeof radius !== 'number' || !Number.isFinite(radius)) {
     return fallback;
   }
@@ -151,9 +158,17 @@ export async function launchPinnedApp(appId: string): Promise<void> {
   }
 }
 
-export async function setAppPinned(desktopFile: string, pinned: boolean, wmClass?: string): Promise<void> {
+export async function setAppPinned(
+  desktopFile: string,
+  pinned: boolean,
+  wmClass?: string
+): Promise<void> {
   if (!isTauri()) return;
-  await invoke('set_app_pinned', { desktopFile, pinned, wmClass: wmClass ?? null });
+  await invoke('set_app_pinned', {
+    desktopFile,
+    pinned,
+    wmClass: wmClass ?? null
+  });
 }
 
 export async function ignoreWmClass(wmClass: string): Promise<void> {
@@ -176,7 +191,10 @@ export async function focusAppWindows(appId: string): Promise<void> {
     await invoke('focus_app_windows', { appId });
     console.info(`Control Strip: focused app windows for ${appId}`);
   } catch (error) {
-    console.error(`Control Strip: failed to focus app windows for ${appId}`, error);
+    console.error(
+      `Control Strip: failed to focus app windows for ${appId}`,
+      error
+    );
   }
 }
 
@@ -185,7 +203,12 @@ export function resizeStripWindow(width: number, height: number): void {
     return;
   }
 
-  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+  if (
+    !Number.isFinite(width) ||
+    !Number.isFinite(height) ||
+    width <= 0 ||
+    height <= 0
+  ) {
     return;
   }
 
@@ -194,9 +217,13 @@ export function resizeStripWindow(width: number, height: number): void {
   });
 }
 
-export function startRunningWindowPolling(onWindows?: (windows: RunningWindow[]) => void): () => void {
+export function startRunningWindowPolling(
+  onWindows?: (windows: RunningWindow[]) => void
+): () => void {
   if (!isTauri()) {
-    console.info('Control Strip: running window polling disabled outside Tauri');
+    console.info(
+      'Control Strip: running window polling disabled outside Tauri'
+    );
     return () => {};
   }
 
@@ -213,11 +240,16 @@ export function startRunningWindowPolling(onWindows?: (windows: RunningWindow[])
     }
 
     if (result.error) {
-      console.warn('Control Strip: running window detection warning:', result.error);
+      console.warn(
+        'Control Strip: running window detection warning:',
+        result.error
+      );
     }
 
     onWindows?.(result.windows);
-    console.info(`Control Strip: detected ${result.windows.length} running windows`);
+    console.info(
+      `Control Strip: detected ${result.windows.length} running windows`
+    );
     if (result.windows.length > 0) {
       console.table(result.windows);
     }
@@ -238,7 +270,9 @@ export function applyRunningWindowsToItems(
   items: ControlStripItem[],
   runningWindows: RunningWindow[]
 ): ControlStripItem[] {
-  const unmatchedWindows = new Map(runningWindows.map((windowItem) => [windowItem.id, windowItem]));
+  const unmatchedWindows = new Map(
+    runningWindows.map((windowItem) => [windowItem.id, windowItem])
+  );
   let openPinnedItemCount = 0;
 
   const pinnedItems = items.filter((item) => item.isPinned !== false);
@@ -301,7 +335,10 @@ function normalizeBackendItem(item: BackendControlStripItem): ControlStripItem {
   };
 }
 
-function doesWindowMatchItem(item: ControlStripItem, windowItem: RunningWindow): boolean {
+function doesWindowMatchItem(
+  item: ControlStripItem,
+  windowItem: RunningWindow
+): boolean {
   const wmClassHint = item.match?.wm_class?.trim().toLowerCase();
   const titleHint = item.match?.title_contains?.trim().toLowerCase();
 
@@ -315,7 +352,10 @@ function doesWindowMatchItem(item: ControlStripItem, windowItem: RunningWindow):
   return wmClassMatches && titleMatches;
 }
 
-function doesWindowClassMatch(windowItem: RunningWindow, hint: string): boolean {
+function doesWindowClassMatch(
+  windowItem: RunningWindow,
+  hint: string
+): boolean {
   return (
     doesClassValueMatch(windowItem.wm_class, hint) ||
     doesClassValueMatch(windowItem.wm_class_instance, hint)
@@ -343,11 +383,11 @@ function normalizeAppMatchKey(value: string): string {
     .replace(/^-+|-+$/g, '');
 }
 
-function doesWindowMatchWeakFallback(item: ControlStripItem, windowItem: RunningWindow): boolean {
-  const candidates = [
-    getDesktopFileStem(item.desktopFile),
-    item.label
-  ]
+function doesWindowMatchWeakFallback(
+  item: ControlStripItem,
+  windowItem: RunningWindow
+): boolean {
+  const candidates = [getDesktopFileStem(item.desktopFile), item.label]
     .map((candidate) => candidate?.trim().toLowerCase())
     .filter(Boolean) as string[];
 
@@ -355,10 +395,14 @@ function doesWindowMatchWeakFallback(item: ControlStripItem, windowItem: Running
     return false;
   }
 
-  return candidates.some((candidate) => doesWindowClassMatch(windowItem, candidate));
+  return candidates.some((candidate) =>
+    doesWindowClassMatch(windowItem, candidate)
+  );
 }
 
-function createTemporaryItems(runningWindows: RunningWindow[]): ControlStripItem[] {
+function createTemporaryItems(
+  runningWindows: RunningWindow[]
+): ControlStripItem[] {
   const groupedWindows = new Map<string, RunningWindow[]>();
 
   for (const windowItem of runningWindows) {
@@ -402,7 +446,9 @@ function getWindowGroupKey(windowItem: RunningWindow): string {
   return windowItem.wm_class.trim() || windowItem.wm_class_instance.trim();
 }
 
-function getDesktopFileStem(desktopFile: string | undefined): string | undefined {
+function getDesktopFileStem(
+  desktopFile: string | undefined
+): string | undefined {
   if (!desktopFile) {
     return undefined;
   }
@@ -418,7 +464,6 @@ function toControlStripWindow(windowItem: RunningWindow): ControlStripWindow {
     title: windowItem.title
   };
 }
-
 
 export interface WindowMenuAnchor {
   screenLeft: number;

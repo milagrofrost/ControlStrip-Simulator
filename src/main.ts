@@ -24,7 +24,9 @@ if (!app) {
 
 app.innerHTML = '';
 
-const isWindowMenu = new URLSearchParams(window.location.search).has('windowMenu');
+const isWindowMenu = new URLSearchParams(window.location.search).has(
+  'windowMenu'
+);
 
 if (isWindowMenu) {
   void bootstrapWindowMenu();
@@ -35,7 +37,8 @@ if (isWindowMenu) {
 async function bootstrap(): Promise<void> {
   const model = await loadControlStripModel();
   let items = model.items;
-  let latestRunningWindows: Parameters<typeof applyRunningWindowsToItems>[1] = [];
+  let latestRunningWindows: Parameters<typeof applyRunningWindowsToItems>[1] =
+    [];
   let stripContentSize = { width: 1, height: 24 };
   let lastRequestedStripSize = { width: 0, height: 0 };
   let runningWindowGeneration = 0;

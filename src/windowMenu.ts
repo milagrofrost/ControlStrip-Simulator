@@ -46,7 +46,10 @@ export async function bootstrapWindowMenu(): Promise<void> {
   for (const windowItem of payload.windows) {
     const row = document.createElement('button');
     row.type = 'button';
-    row.className = ['popup-window-menu__row', windowItem.isActive && 'is-active']
+    row.className = [
+      'popup-window-menu__row',
+      windowItem.isActive && 'is-active'
+    ]
       .filter(Boolean)
       .join(' ');
     row.textContent = windowItem.title;
@@ -54,20 +57,28 @@ export async function bootstrapWindowMenu(): Promise<void> {
       event.preventDefault();
       event.stopPropagation();
       cleanup();
-      void invoke('select_window_menu_item', { windowId: windowItem.id }).catch((error) => {
-        console.error('Control Strip: failed to select window', error);
-        void closePopup(cleanup);
-      });
+      void invoke('select_window_menu_item', { windowId: windowItem.id }).catch(
+        (error) => {
+          console.error('Control Strip: failed to select window', error);
+          void closePopup(cleanup);
+        }
+      );
     });
     menu.append(row);
   }
 
   app.append(menu);
 
-  window.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape') {
-      void closePopup(cleanup);
-    }
-  }, { signal: eventController.signal });
-  window.addEventListener('pagehide', cleanup, { signal: eventController.signal });
+  window.addEventListener(
+    'keydown',
+    (event) => {
+      if (event.key === 'Escape') {
+        void closePopup(cleanup);
+      }
+    },
+    { signal: eventController.signal }
+  );
+  window.addEventListener('pagehide', cleanup, {
+    signal: eventController.signal
+  });
 }
