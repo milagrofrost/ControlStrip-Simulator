@@ -2,26 +2,10 @@ import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import './WindowMenu.css';
 
-interface WindowMenuEntry {
-  id: string;
-  title: string;
-  isActive?: boolean;
-}
+import { decodeWindowMenuPayload } from './windowMenuPayload';
 
-interface WindowMenuPayload {
-  appId: string;
-  label: string;
-  windows: WindowMenuEntry[];
-}
-
-function decodePayload(encoded: string): WindowMenuPayload {
-  const normalized = encoded.replace(/-/g, '+').replace(/_/g, '/');
-  const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=');
-  const bytes = Uint8Array.from(atob(padded), (character) => character.charCodeAt(0));
-  return JSON.parse(new TextDecoder().decode(bytes)) as WindowMenuPayload;
-}
-
-async function closePopup(): Promise<void> {
+async function closePopup(cleanup?: () => void): Promise<void> {
+  cleanup?.();
   try {
     await getCurrentWindow().close();
   } catch (error) {
@@ -40,7 +24,17 @@ export async function bootstrapWindowMenu(): Promise<void> {
     return;
   }
 
-  const payload = decodePayload(encoded);
+  const payload = decodeWindowMenuPayload(encoded);
+  if (!payload) {
+    await closePopup();
+    return;
+  }
+
+  const eventController = new AbortController();
+  const cleanup = (): void => {
+    eventController.abort();
+  };
+
   app.replaceChildren();
   app.className = 'window-menu-app';
 
@@ -59,9 +53,10 @@ export async function bootstrapWindowMenu(): Promise<void> {
     row.addEventListener('pointerdown', (event) => {
       event.preventDefault();
       event.stopPropagation();
+      cleanup();
       void invoke('select_window_menu_item', { windowId: windowItem.id }).catch((error) => {
         console.error('Control Strip: failed to select window', error);
-        void closePopup();
+        void closePopup(cleanup);
       });
     });
     menu.append(row);
@@ -71,29 +66,8 @@ export async function bootstrapWindowMenu(): Promise<void> {
 
   window.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') {
-      void closePopup();
+      void closePopup(cleanup);
     }
-  });
-
-  const popup = getCurrentWindow();
-  const unlisten = await popup.onFocusChanged(({ payload: focused }) => {
-    if (!focused) {
-      unlisten();
-      void closePopup();
-    }
-  });
-
-  window.setTimeout(() => {
-    let missedFocusChecks = 0;
-    const focusPoll = window.setInterval(() => {
-      void popup.isFocused().then((focused) => {
-        missedFocusChecks = focused ? 0 : missedFocusChecks + 1;
-        if (missedFocusChecks >= 2) {
-          window.clearInterval(focusPoll);
-          unlisten();
-          void closePopup();
-        }
-      });
-    }, 100);
-  }, 250);
+  }, { signal: eventController.signal });
+  window.addEventListener('pagehide', cleanup, { signal: eventController.signal });
 }
