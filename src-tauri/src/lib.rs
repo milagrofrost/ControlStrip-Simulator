@@ -58,7 +58,7 @@ screenCorner:
 pinned_apps: []
 "##;
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default)]
 struct ControlStripConfig {
     window: WindowPlacementConfig,
@@ -254,10 +254,70 @@ struct RunningWindow {
     pid: Option<u32>,
 }
 
+struct ConfigStore {
+    path: PathBuf,
+    config: Mutex<ControlStripConfig>,
+}
+
+impl ConfigStore {
+    fn load() -> Result<Self, String> {
+        let path = ensure_config_file()?;
+        let config = load_config(&path)?;
+        Ok(Self {
+            path,
+            config: Mutex::new(config),
+        })
+    }
+
+    fn load_or_default() -> Self {
+        match Self::load() {
+            Ok(store) => store,
+            Err(error) => {
+                eprintln!("Control Strip: could not load config cache: {error}");
+                Self {
+                    path: default_config_path(),
+                    config: Mutex::new(ControlStripConfig::default()),
+                }
+            }
+        }
+    }
+
+    fn current(&self) -> Result<ControlStripConfig, String> {
+        self.config
+            .lock()
+            .map_err(|_| "Config cache lock is poisoned".to_string())
+            .map(|config| config.clone())
+    }
+
+    fn reload(&self) -> Result<(), String> {
+        let config = load_config(&self.path)?;
+        let mut cached = self
+            .config
+            .lock()
+            .map_err(|_| "Config cache lock is poisoned".to_string())?;
+        *cached = config;
+        Ok(())
+    }
+
+    fn update<F>(&self, update: F) -> Result<(), String>
+    where
+        F: FnOnce(&mut ControlStripConfig) -> Result<(), String>,
+    {
+        let mut next_config = self.current()?;
+        update(&mut next_config)?;
+        write_config(&self.path, &next_config)?;
+        let mut cached = self
+            .config
+            .lock()
+            .map_err(|_| "Config cache lock is poisoned".to_string())?;
+        *cached = next_config;
+        Ok(())
+    }
+}
+
 #[tauri::command]
-fn get_control_strip_model() -> Result<ControlStripModel, String> {
-    let config_path = ensure_config_file()?;
-    let config = load_config(&config_path)?;
+fn get_control_strip_model(config_store: tauri::State<'_, ConfigStore>) -> Result<ControlStripModel, String> {
+    let config = config_store.current()?;
     let items: Vec<ControlStripItem> = config
         .pinned_apps
         .iter()
@@ -309,9 +369,8 @@ fn get_running_windows() -> RunningWindowsResult {
 }
 
 #[tauri::command]
-fn launch_pinned_app(app_id: String) -> Result<(), String> {
-    let config_path = ensure_config_file()?;
-    let config = load_config(&config_path)?;
+fn launch_pinned_app(app_id: String, config_store: tauri::State<'_, ConfigStore>) -> Result<(), String> {
+    let config = config_store.current()?;
     let pinned_app = config
         .pinned_apps
         .iter()
@@ -326,9 +385,12 @@ fn launch_pinned_app(app_id: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn set_app_pinned(desktop_file: String, pinned: bool, wm_class: Option<String>) -> Result<(), String> {
-    let config_path = ensure_config_file()?;
-    let mut config = load_config(&config_path)?;
+fn set_app_pinned(
+    desktop_file: String,
+    pinned: bool,
+    wm_class: Option<String>,
+    config_store: tauri::State<'_, ConfigStore>,
+) -> Result<(), String> {
     let expanded = expand_home(&desktop_file);
     let canonical = fs::canonicalize(&expanded)
         .map_err(|error| format!("Failed to resolve {}: {error}", expanded.display()))?;
@@ -336,46 +398,47 @@ fn set_app_pinned(desktop_file: String, pinned: bool, wm_class: Option<String>) 
         return Err(format!("Pinned application must be a .desktop file: {}", canonical.display()));
     }
     let canonical_string = canonical.display().to_string();
-    if pinned {
-        if !config.pinned_apps.iter().any(|item| expand_home(&item.desktop_file) == canonical) {
-            config.pinned_apps.push(PinnedAppConfig {
-                desktop_file: canonical_string,
-                icon: None,
-                r#match: wm_class.filter(|value| !value.trim().is_empty()).map(|value| WindowMatch {
-                    wm_class: Some(value),
-                    title_contains: None,
-                }),
-            });
+    config_store.update(|config| {
+        if pinned {
+            if !config.pinned_apps.iter().any(|item| expand_home(&item.desktop_file) == canonical) {
+                config.pinned_apps.push(PinnedAppConfig {
+                    desktop_file: canonical_string,
+                    icon: None,
+                    r#match: wm_class.filter(|value| !value.trim().is_empty()).map(|value| WindowMatch {
+                        wm_class: Some(value),
+                        title_contains: None,
+                    }),
+                });
+            }
+        } else {
+            config.pinned_apps.retain(|item| expand_home(&item.desktop_file) != canonical);
         }
-    } else {
-        config.pinned_apps.retain(|item| expand_home(&item.desktop_file) != canonical);
-    }
-    let yaml = serde_yaml::to_string(&config)
-        .map_err(|error| format!("Failed to serialize {}: {error}", config_path.display()))?;
-    fs::write(&config_path, yaml)
-        .map_err(|error| format!("Failed to write {}: {error}", config_path.display()))
+        Ok(())
+    })
 }
 
 #[tauri::command]
-fn ignore_wm_class(wm_class: String) -> Result<(), String> {
+fn ignore_wm_class(wm_class: String, config_store: tauri::State<'_, ConfigStore>) -> Result<(), String> {
     let normalized = wm_class.trim();
     if normalized.is_empty() {
         return Err("Window class is empty".to_string());
     }
-    let config_path = ensure_config_file()?;
-    let mut config = load_config(&config_path)?;
-    if !config.window_filters.exclude_wm_classes.iter().any(|value| value.eq_ignore_ascii_case(normalized)) {
-        config.window_filters.exclude_wm_classes.push(normalized.to_string());
-    }
-    let yaml = serde_yaml::to_string(&config)
-        .map_err(|error| format!("Failed to serialize {}: {error}", config_path.display()))?;
-    fs::write(&config_path, yaml)
-        .map_err(|error| format!("Failed to write {}: {error}", config_path.display()))
+    config_store.update(|config| {
+        if !config.window_filters.exclude_wm_classes.iter().any(|value| value.eq_ignore_ascii_case(normalized)) {
+            config.window_filters.exclude_wm_classes.push(normalized.to_string());
+        }
+        Ok(())
+    })
 }
 
 #[tauri::command]
 fn resolve_desktop_file(wm_class: String) -> Result<String, String> {
     resolve_desktop_file_for_wm_class(&wm_class).map(|path| path.display().to_string())
+}
+
+#[tauri::command]
+fn reload_config(config_store: tauri::State<'_, ConfigStore>) -> Result<(), String> {
+    config_store.reload()
 }
 
 #[tauri::command]
@@ -784,9 +847,10 @@ fn hide_window_menu(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn focus_app_windows(app_id: String) -> Result<(), String> {
+fn focus_app_windows(app_id: String, config_store: tauri::State<'_, ConfigStore>) -> Result<(), String> {
     let windows = current_running_windows()?;
-    let window_ids = resolve_focus_window_ids(&app_id, &windows)?;
+    let config = config_store.current()?;
+    let window_ids = resolve_focus_window_ids(&app_id, &windows, &config)?;
 
     if window_ids.is_empty() {
         return Err(format!("No detected windows found for app id {app_id}"));
@@ -811,12 +875,13 @@ fn resize_strip_window(
     window: tauri::WebviewWindow,
     width: f64,
     height: f64,
+    config_store: tauri::State<'_, ConfigStore>,
 ) -> Result<(), String> {
     if !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 0.0 {
         return Err(format!("Invalid strip content size {width}x{height}"));
     }
 
-    let placement = load_window_placement();
+    let placement = config_store.current()?.window;
     let scale = window
         .scale_factor()
         .map_err(|error| format!("Failed to read scale factor: {error}"))?;
@@ -842,9 +907,17 @@ fn resize_strip_window(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .manage(ConfigStore::load_or_default())
         .manage(TransientAppResolutionCache::default())
         .setup(|app| {
-            let placement = load_window_placement();
+            let placement = app
+                .state::<ConfigStore>()
+                .current()
+                .map(|config| config.window)
+                .unwrap_or_else(|error| {
+                    eprintln!("Control Strip: could not load window placement config: {error}");
+                    WindowPlacementConfig::default()
+                });
             if let Some(window) = app.get_webview_window("main") {
                 if let Err(error) = position_control_strip_window(&window, placement) {
                     eprintln!("Control Strip: could not position window: {error}");
@@ -866,6 +939,7 @@ pub fn run() {
             launch_pinned_app,
             set_app_pinned,
             ignore_wm_class,
+            reload_config,
             resolve_desktop_file,
             resolve_transient_app,
             focus_app_windows,
@@ -876,16 +950,6 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running ControlStrip Simulator");
-}
-
-fn load_window_placement() -> WindowPlacementConfig {
-    ensure_config_file()
-        .and_then(|config_path| load_config(&config_path))
-        .map(|config| config.window)
-        .unwrap_or_else(|error| {
-            eprintln!("Control Strip: could not load window placement config: {error}");
-            WindowPlacementConfig::default()
-        })
 }
 
 fn position_control_strip_window(
@@ -955,13 +1019,15 @@ fn current_running_windows() -> Result<Vec<RunningWindow>, String> {
     })
 }
 
-fn resolve_focus_window_ids(app_id: &str, windows: &[RunningWindow]) -> Result<Vec<String>, String> {
+fn resolve_focus_window_ids(
+    app_id: &str,
+    windows: &[RunningWindow],
+    config: &ControlStripConfig,
+) -> Result<Vec<String>, String> {
     if !is_valid_app_id(app_id) {
         return Err(format!("Invalid app id {app_id}"));
     }
 
-    let config_path = ensure_config_file()?;
-    let config = load_config(&config_path)?;
     let mut unmatched_indices = (0..windows.len()).collect::<Vec<_>>();
 
     for pinned_app in &config.pinned_apps {
@@ -1080,9 +1146,10 @@ fn spawn_launcher(program: &str, args: &[&str]) -> Result<(), String> {
 }
 
 fn ensure_config_file() -> Result<PathBuf, String> {
-    let home = dirs::home_dir().ok_or_else(|| "Unable to determine home directory".to_string())?;
-    let config_dir = home.join(CONFIG_DIR);
-    let config_path = config_dir.join(CONFIG_FILE);
+    let config_path = default_config_path();
+    let config_dir = config_path
+        .parent()
+        .ok_or_else(|| format!("Config path has no parent: {}", config_path.display()))?;
 
     fs::create_dir_all(&config_dir)
         .map_err(|error| format!("Failed to create {}: {error}", config_dir.display()))?;
@@ -1095,12 +1162,26 @@ fn ensure_config_file() -> Result<PathBuf, String> {
     Ok(config_path)
 }
 
+fn default_config_path() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(CONFIG_DIR)
+        .join(CONFIG_FILE)
+}
+
 fn load_config(config_path: &Path) -> Result<ControlStripConfig, String> {
     let contents = fs::read_to_string(config_path)
         .map_err(|error| format!("Failed to read {}: {error}", config_path.display()))?;
 
     serde_yaml::from_str(&contents)
         .map_err(|error| format!("Failed to parse {}: {error}", config_path.display()))
+}
+
+fn write_config(config_path: &Path, config: &ControlStripConfig) -> Result<(), String> {
+    let yaml = serde_yaml::to_string(config)
+        .map_err(|error| format!("Failed to serialize {}: {error}", config_path.display()))?;
+    fs::write(config_path, yaml)
+        .map_err(|error| format!("Failed to write {}: {error}", config_path.display()))
 }
 
 fn build_control_strip_item(config: &PinnedAppConfig) -> ControlStripItem {
@@ -1614,6 +1695,27 @@ mod tests {
         }
     }
 
+    fn config_store(path: PathBuf, config: ControlStripConfig) -> ConfigStore {
+        ConfigStore {
+            path,
+            config: Mutex::new(config),
+        }
+    }
+
+    fn sample_config_with_pinned_app(desktop_file: String) -> ControlStripConfig {
+        ControlStripConfig {
+            pinned_apps: vec![PinnedAppConfig {
+                desktop_file,
+                icon: None,
+                r#match: Some(WindowMatch {
+                    wm_class: Some("Example".to_string()),
+                    title_contains: None,
+                }),
+            }],
+            ..ControlStripConfig::default()
+        }
+    }
+
     #[test]
     fn parses_desktop_entry_fields_and_ignores_other_groups() {
         let parsed = parse_desktop_file(
@@ -1716,6 +1818,89 @@ Comment=Line\nTwo
         assert!(does_class_value_match("Navigator.Firefox", "firefox"));
         assert!(!does_class_value_match("Terminal", "term"));
         assert!(!does_class_value_match("SomeFirefoxHelper", "firefox"));
+    }
+
+    #[test]
+    fn config_store_loads_initial_config() {
+        let root = unique_test_dir("config-load");
+        let config_path = root.join("config.yaml");
+        let desktop_file = "/usr/share/applications/example.desktop".to_string();
+        let config = sample_config_with_pinned_app(desktop_file.clone());
+        write_config(&config_path, &config).expect("write config");
+
+        let loaded = load_config(&config_path).expect("load config");
+
+        assert_eq!(loaded.pinned_apps.len(), 1);
+        assert_eq!(loaded.pinned_apps[0].desktop_file, desktop_file);
+    }
+
+    #[test]
+    fn config_store_updates_cache_after_successful_write() {
+        let root = unique_test_dir("config-update");
+        let config_path = root.join("config.yaml");
+        let store = config_store(config_path.clone(), ControlStripConfig::default());
+
+        store
+            .update(|config| {
+                config.window_filters.exclude_wm_classes.push("Example".to_string());
+                Ok(())
+            })
+            .expect("update config");
+
+        assert_eq!(
+            store.current().expect("cached config").window_filters.exclude_wm_classes,
+            vec!["Example".to_string()]
+        );
+        assert_eq!(
+            load_config(&config_path)
+                .expect("persisted config")
+                .window_filters
+                .exclude_wm_classes,
+            vec!["Example".to_string()]
+        );
+    }
+
+    #[test]
+    fn config_store_preserves_cache_after_failed_write() {
+        let root = unique_test_dir("config-failed-write");
+        let unwritable_path = root.join("directory-instead-of-file");
+        fs::create_dir_all(&unwritable_path).expect("create directory");
+        let store = config_store(unwritable_path, ControlStripConfig::default());
+
+        let error = store
+            .update(|config| {
+                config.window_filters.exclude_wm_classes.push("Broken".to_string());
+                Ok(())
+            })
+            .expect_err("write should fail");
+
+        assert!(error.contains("Failed to write"));
+        assert!(store
+            .current()
+            .expect("cached config")
+            .window_filters
+            .exclude_wm_classes
+            .is_empty());
+    }
+
+    #[test]
+    fn config_store_explicit_reload_replaces_cache_from_file() {
+        let root = unique_test_dir("config-reload");
+        let config_path = root.join("config.yaml");
+        let store = config_store(config_path.clone(), ControlStripConfig::default());
+        let desktop_file = "/usr/share/applications/reloaded.desktop".to_string();
+        write_config(
+            &config_path,
+            &sample_config_with_pinned_app(desktop_file.clone()),
+        )
+        .expect("write replacement config");
+
+        store.reload().expect("reload config");
+
+        assert_eq!(
+            store.current().expect("cached config").pinned_apps[0].desktop_file,
+            desktop_file
+        );
     }
 
     #[test]
