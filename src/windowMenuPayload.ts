@@ -6,6 +6,7 @@ export interface WindowMenuEntry {
 
 export interface WindowMenuPayload {
   appId: string;
+  sessionId: string;
   label: string;
   windows: WindowMenuEntry[];
 }
@@ -27,7 +28,11 @@ export function validateWindowMenuPayload(value: unknown): WindowMenuPayload | n
     return null;
   }
 
-  if (typeof value.appId !== 'string' || typeof value.label !== 'string') {
+  if (
+    typeof value.appId !== 'string' ||
+    typeof value.sessionId !== 'string' ||
+    typeof value.label !== 'string'
+  ) {
     return null;
   }
 
@@ -56,6 +61,7 @@ export function validateWindowMenuPayload(value: unknown): WindowMenuPayload | n
 
   return {
     appId: value.appId,
+    sessionId: value.sessionId,
     label: value.label,
     windows
   };

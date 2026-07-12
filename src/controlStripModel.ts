@@ -428,19 +428,23 @@ export interface WindowMenuAnchor {
 
 export async function showWindowMenu(
   item: ControlStripItem,
-  anchor: WindowMenuAnchor
+  anchor: WindowMenuAnchor,
+  sessionId: string
 ): Promise<void> {
   if (!isTauri()) {
     return;
   }
 
   await invoke('show_window_menu', {
-    appId: item.id,
-    label: item.label,
-    windows: item.windows ?? [],
-    screenLeft: anchor.screenLeft,
-    screenTop: anchor.screenTop,
-    anchorWidth: anchor.width
+    request: {
+      appId: item.id,
+      sessionId,
+      label: item.label,
+      windows: item.windows ?? [],
+      screenLeft: anchor.screenLeft,
+      screenTop: anchor.screenTop,
+      anchorWidth: anchor.width
+    }
   });
 }
 

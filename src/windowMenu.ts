@@ -1,7 +1,9 @@
 import { invoke } from '@tauri-apps/api/core';
+import { emit } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import './WindowMenu.css';
 
+import { FLYOUT_MENU_HOVER_EVENT } from './flyoutLifecycle';
 import { decodeWindowMenuPayload } from './windowMenuPayload';
 
 async function closePopup(cleanup?: () => void): Promise<void> {
@@ -42,6 +44,20 @@ export async function bootstrapWindowMenu(): Promise<void> {
   menu.className = 'popup-window-menu';
   menu.setAttribute('role', 'menu');
   menu.setAttribute('aria-label', `${payload.label} windows`);
+  menu.addEventListener('pointerenter', () => {
+    void emit(FLYOUT_MENU_HOVER_EVENT, {
+      appId: payload.appId,
+      sessionId: payload.sessionId,
+      hovered: true
+    });
+  }, { signal: eventController.signal });
+  menu.addEventListener('pointerleave', () => {
+    void emit(FLYOUT_MENU_HOVER_EVENT, {
+      appId: payload.appId,
+      sessionId: payload.sessionId,
+      hovered: false
+    });
+  }, { signal: eventController.signal });
 
   for (const windowItem of payload.windows) {
     const row = document.createElement('button');

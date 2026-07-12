@@ -16,6 +16,7 @@ describe('window menu payload validation', () => {
   it('accepts a well-formed payload', () => {
     const payload = {
       appId: 'running:vlc',
+      sessionId: 'session-1',
       label: 'VLC',
       windows: [
         { id: '0x100', title: 'Playlist' },
@@ -30,9 +31,10 @@ describe('window menu payload validation', () => {
   it('rejects malformed payloads', () => {
     expect(validateWindowMenuPayload(null)).toBeNull();
     expect(validateWindowMenuPayload({ appId: 1, label: 'VLC', windows: [] })).toBeNull();
+    expect(validateWindowMenuPayload({ appId: 'vlc', label: 'VLC', windows: [] })).toBeNull();
     expect(validateWindowMenuPayload({ appId: 'vlc', label: 'VLC' })).toBeNull();
-    expect(validateWindowMenuPayload({ appId: 'vlc', label: 'VLC', windows: [{ id: '0x1' }] })).toBeNull();
-    expect(validateWindowMenuPayload({ appId: 'vlc', label: 'VLC', windows: [{ id: '0x1', title: 'VLC', isActive: 'yes' }] })).toBeNull();
+    expect(validateWindowMenuPayload({ appId: 'vlc', sessionId: 'session-1', label: 'VLC', windows: [{ id: '0x1' }] })).toBeNull();
+    expect(validateWindowMenuPayload({ appId: 'vlc', sessionId: 'session-1', label: 'VLC', windows: [{ id: '0x1', title: 'VLC', isActive: 'yes' }] })).toBeNull();
     expect(decodeWindowMenuPayload('not valid base64')).toBeNull();
   });
 });

@@ -54,6 +54,7 @@ export type ControlStripWindow = {
 
 export type ControlStripElement = HTMLElement & {
   setItems: (nextItems: ControlStripItem[]) => void;
+  setFlyoutHeldOwner: (owner: FlyoutHeldOwner | null) => void;
 };
 
 export type ControlStripSizingOptions = {
@@ -72,9 +73,19 @@ export type ControlStripOptions = {
   onLaunchPinnedApp?: (item: ControlStripItem) => void;
   onFocusAppWindows?: (item: ControlStripItem) => void;
   onOpenWindowMenu?: (item: ControlStripItem, anchor: { screenLeft: number; screenTop: number; width: number }) => void;
+  onFlyoutOriginHover?: (event: FlyoutOriginHoverEvent) => void;
   onContentResize?: (size: { width: number; height: number }) => void;
   sizing?: ControlStripSizingOptions;
   screenCorner?: ScreenCornerOptions;
+};
+
+export type FlyoutHeldOwner = {
+  appId: string;
+  sessionId: string;
+};
+
+export type FlyoutOriginHoverEvent = FlyoutHeldOwner & {
+  hovered: boolean;
 };
 
 export type PinnedAppConfig = {
@@ -157,6 +168,7 @@ export function createControlStrip(
   // Tail dragging compares horizontal pointer movement to one measured pane width.
   let resizeState: ResizeState | null = null;
   let activePanePress: ActivePanePress | null = null;
+  let flyoutHeldOwner: FlyoutHeldOwner | null = null;
   let longPressTimer: number | null = null;
   let longPressTriggered = false;
   let snapBackTimer: number | null = null;
@@ -216,7 +228,10 @@ export function createControlStrip(
         const itemId = part.slice('pane:'.length);
         const item = items.find((candidate) => candidate.id === itemId);
         if (!item) continue;
-        const isPressed = pressedPart === part || clickFeedbackPressedItems.has(itemId);
+        const isPressed =
+          pressedPart === part ||
+          clickFeedbackPressedItems.has(itemId) ||
+          flyoutHeldOwner?.appId === itemId;
         element.classList.toggle('is-pressed', isPressed);
         element.style.backgroundImage = `url("${getPaneAsset(item, isPressed)}")`;
       }
@@ -454,9 +469,12 @@ export function createControlStrip(
       clearLongPressTimer();
 
       if (longPressTriggered) {
+        const itemId = activePanePress.item.id;
         activePanePress = null;
         longPressTriggered = false;
-        clearPressedPart();
+        if (flyoutHeldOwner?.appId !== itemId) {
+          clearPressedPart();
+        }
         return;
       }
 
@@ -624,7 +642,7 @@ export function createControlStrip(
         clearPressedPart
       ),
         ...visibleItems.map((item) =>
-          createPane(item, pressedPart, attachPaneHandlers)
+          createPane(item, pressedPart, flyoutHeldOwner, attachPaneHandlers)
         ),
         createImagePart(
         {
@@ -734,6 +752,24 @@ export function createControlStrip(
         beginPaneLongPress(item, anchorRect);
       }
     });
+
+    pane.addEventListener('pointerenter', () => {
+      reportFlyoutOriginHover(item.id, true);
+    });
+    pane.addEventListener('pointerleave', () => {
+      reportFlyoutOriginHover(item.id, false);
+    });
+  };
+
+  const reportFlyoutOriginHover = (appId: string, hovered: boolean): void => {
+    if (flyoutHeldOwner?.appId !== appId) {
+      return;
+    }
+
+    options.onFlyoutOriginHover?.({
+      ...flyoutHeldOwner,
+      hovered
+    });
   };
 
   const cancelPanePressIfPointerLeftAnchor = (event: PointerEvent): void => {
@@ -776,10 +812,16 @@ export function createControlStrip(
     render();
   };
 
+  strip.setFlyoutHeldOwner = (owner: FlyoutHeldOwner | null): void => {
+    flyoutHeldOwner = owner;
+    updatePressedVisuals();
+  };
+
   render();
   const removeStrip = strip.remove.bind(strip);
   strip.remove = () => {
     clearLongPressTimer();
+    flyoutHeldOwner = null;
     clearSnapBackTimer();
     for (const itemId of [...clickFeedbackTimers.keys()]) {
       clearClickFeedback(itemId);
@@ -850,6 +892,7 @@ function normalizeScreenCornerRadius(radius: number | null | undefined): number 
 function createPane(
   item: ControlStripItem,
   pressedPart: PressedPart,
+  flyoutHeldOwner: FlyoutHeldOwner | null,
   attachPaneHandlers: (
     pane: HTMLElement,
     item: ControlStripItem,
@@ -857,7 +900,7 @@ function createPane(
   ) => void
 ): HTMLElement {
   const panePressedPart = `pane:${item.id}` as const;
-  const isPressed = pressedPart === panePressedPart;
+  const isPressed = pressedPart === panePressedPart || flyoutHeldOwner?.appId === item.id;
   const pane = document.createElement('div');
   pane.className = [
     'control-strip__part',
