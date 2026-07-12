@@ -323,12 +323,24 @@ function doesWindowClassMatch(windowItem: RunningWindow, hint: string): boolean 
 }
 
 function doesClassValueMatch(windowClass: string, hint: string): boolean {
-  const normalizedWmClass = windowClass.trim().toLowerCase();
+  const normalizedWmClass = normalizeAppMatchKey(windowClass);
+  const normalizedHint = normalizeAppMatchKey(hint);
+  if (!normalizedHint) {
+    return false;
+  }
+
   return (
-    normalizedWmClass === hint ||
-    normalizedWmClass.endsWith(`.${hint}`) ||
-    normalizedWmClass.includes(hint)
+    normalizedWmClass === normalizedHint ||
+    normalizedWmClass.endsWith(`-${normalizedHint}`)
   );
+}
+
+function normalizeAppMatchKey(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
 }
 
 function doesWindowMatchWeakFallback(item: ControlStripItem, windowItem: RunningWindow): boolean {

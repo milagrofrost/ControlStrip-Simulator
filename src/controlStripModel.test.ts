@@ -92,4 +92,29 @@ describe('running window application', () => {
       ]
     });
   });
+
+  it('does not match pinned apps by unbounded class substrings', () => {
+    const result = applyRunningWindowsToItems(
+      [
+        {
+          ...pinnedBrowser,
+          id: 'terminal-shortcut',
+          label: 'Term',
+          desktopFile: '/usr/share/applications/term.desktop',
+          match: { wm_class: 'term' }
+        }
+      ],
+      [windowItem({ id: '0x400', title: 'Terminal', wm_class: 'org.gnome.Terminal' })]
+    );
+
+    expect(result[0]).toMatchObject({
+      id: 'terminal-shortcut',
+      isOpen: false,
+      windows: []
+    });
+    expect(result[1]).toMatchObject({
+      id: 'running:org-gnome-terminal',
+      windows: [{ id: '0x400', title: 'Terminal' }]
+    });
+  });
 });
