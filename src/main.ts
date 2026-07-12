@@ -78,6 +78,16 @@ async function bootstrap(): Promise<void> {
     }
   });
 
+  // The hold menu lives in a separate native window. A click anywhere in the
+  // main Control Strip should dismiss that popup before handling the new action.
+  strip.addEventListener(
+    'pointerdown',
+    () => {
+      void hideWindowMenu();
+    },
+    { capture: true }
+  );
+
   // Window menu rows carry their owning app id. Selecting a minimized window
   // performs a real restore/focus action instead of only closing the menu.
   strip.addEventListener('click', (event) => {

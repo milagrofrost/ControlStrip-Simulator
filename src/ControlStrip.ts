@@ -138,7 +138,7 @@ type StripPart = {
 const initialVisibleStart = 0;
 const minVisibleCount = 1; // A zero-pane strip leaves the scroll controls acting on an invisible window.
 const defaultPaneWidth = 27;
-const longPressDelayMs = 1000;
+const longPressDelayMs = 500;
 const defaultSnapBackDelayMs = 10000;
 
 type ResizeState = {

@@ -2,6 +2,10 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use std::{thread, time::Duration};
 
 use base64::{
@@ -480,6 +484,26 @@ fn show_window_menu(
     .visible(false)
     .build()
     .map_err(|error| format!("Failed to create window menu: {error}"))?;
+
+    // WebKit focus notifications are inconsistent for this small transparent
+    // popup on Raspberry Pi OS. Arm dismissal only after the native window has
+    // actually received focus, then close it on the next native focus loss.
+    let focus_dismiss_armed = Arc::new(AtomicBool::new(false));
+    let focus_dismiss_state = Arc::clone(&focus_dismiss_armed);
+    let focus_dismiss_menu = menu.clone();
+    menu.on_window_event(move |event| match event {
+        tauri::WindowEvent::Focused(true) => {
+            focus_dismiss_state.store(true, Ordering::Release);
+        }
+        tauri::WindowEvent::Focused(false)
+            if focus_dismiss_state.swap(false, Ordering::AcqRel) =>
+        {
+            if let Err(error) = focus_dismiss_menu.close() {
+                eprintln!("Control Strip: failed to close unfocused window menu: {error}");
+            }
+        }
+        _ => {}
+    });
 
     // GTK/X11 may ignore geometry set before a transparent popup is mapped.
     // Show it first, then reapply size and position twice after mapping; the
